@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "name": "flow_1",
+  "blocks": [
+    {
+      "id": "s2qvs6t5",
+      "type": "tokenCard",
+      "props": {
+        "query": "PEPE",
+        "chain": "ethereum",
+        "refreshSec": 30,
+        "showChanges": true,
+        "showTxns": true,
+        "showLinks": true
+      },
+      "x": 40,
+      "y": -312
+    },
+    {
+      "id": "xt77pf9g",
+      "type": "tokenCard",
+      "props": {
+        "query": "PEPE",
+        "chain": "",
+        "refreshSec": 30,
+        "showChanges": true,
+        "showTxns": true,
+        "showLinks": true,
+        "pairAddress": "",
+        "pairLabel": "PEPE"
+      },
+      "x": 16,
+      "y": 416
+    },
+    {
+      "id": "mslz5bat",
+      "type": "coinCard",
+      "props": {
+        "coinId": "pepe",
+        "coinLabel": "Pepe (PEPE)",
+        "currency": "usd",
+        "refreshSec": 120,
+        "showChart": true,
+        "showChanges": true,
+        "showAth": true,
+        "showSupply": true,
+        "showAbout": false,
+        "showLinks": true
+      },
+      "x": 96,
+      "y": 96
+    },
+    {
+      "id": "1zpffb8v",
+      "type": "message",
+      "props": {
+        "text": "eth"
+      },
+      "x": 700,
+      "y": -80
+    }
+  ],
+  "wires": [
+    {
+      "id": "3tausld9",
+      "from": {
+        "block": "1zpffb8v",
+        "port": "out"
+      },
+      "to": {
+        "block": "mslz5bat",
+        "port": "token"
+      }
+    }
+  ],
+  "rev": 6,
+  "updatedAt": "2026-10-15T00:05:10.933Z"
+}
