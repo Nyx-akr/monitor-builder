@@ -1,4 +1,4 @@
-import { getPairsForTokens, type DexPair } from './dexscreener'
+import { byActivity, getPairsForTokens, type DexPair } from './dexscreener'
 
 export type ListSource = 'popular' | 'trending' | 'boosted' | 'new'
 
@@ -37,7 +37,7 @@ const cache = new Map<ListSource, { at: number; pairs: Promise<DexPair[]> }>()
 
 async function loadRefs(source: ListSource, signal?: AbortSignal): Promise<TokenRef[]> {
   if (source === 'popular') return POPULAR
-  const res = await fetch('https://api.dexscreener.com' + ENDPOINTS[source], { signal })
+  const res = await fetch('https://api.dexscreener.com' + ENDPOINTS[source], { signal, cache: 'no-store' })
   if (!res.ok) throw new Error(`DexScreener responded ${res.status}`)
   const refs: TokenRef[] = await res.json()
   // Boost lists repeat a token once per boost; keep the first.
@@ -48,7 +48,7 @@ async function loadRefs(source: ListSource, signal?: AbortSignal): Promise<Token
   })
 }
 
-/** One pair per token (its most liquid), with live price data, in the list's original order. */
+/** One pair per token (its most traded), with live price data, in the list's original order. */
 async function load(source: ListSource): Promise<DexPair[]> {
   const refs = await loadRefs(source)
   const byChain = new Map<string, string[]>()
@@ -60,7 +60,7 @@ async function load(source: ListSource): Promise<DexPair[]> {
   for (const p of pairs) {
     const k = `${p.chainId}:${p.baseToken.address.toLowerCase()}`
     const prev = best.get(k)
-    if (!prev || (p.liquidity?.usd ?? 0) > (prev.liquidity?.usd ?? 0)) best.set(k, p)
+    if (!prev || byActivity(p, prev) < 0) best.set(k, p)
   }
   return refs
     .map((r) => best.get(`${r.chainId}:${r.tokenAddress.toLowerCase()}`))
@@ -68,9 +68,10 @@ async function load(source: ListSource): Promise<DexPair[]> {
 }
 
 /** Cached for a minute so reopening the dropdown is instant. */
-export function getTokenList(source: ListSource): Promise<DexPair[]> {
+export function getTokenList(source: ListSource, fresh = false): Promise<DexPair[]> {
   const hit = cache.get(source)
-  if (hit && Date.now() - hit.at < CACHE_MS) return hit.pairs
+  // `fresh`: a card's input asked for data — ask DexScreener again rather than reuse the cached list.
+  if (!fresh && hit && Date.now() - hit.at < CACHE_MS) return hit.pairs
   const pairs = load(source)
   cache.set(source, { at: Date.now(), pairs })
   pairs.catch(() => cache.delete(source))

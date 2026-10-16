@@ -146,3 +146,28 @@
 @media (max-width: 560px) {
   .tc-stats, .tc-windows { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* API state, top right of every card. */
+.tc { position: relative; }
+.fetch-badge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(11, 14, 20, 0.75);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--muted);
+  pointer-events: auto;
+}
+.fetch-badge .spinner { width: 10px; height: 10px; border-width: 1.5px; }
+.fetch-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.fetch-badge.ok .fetch-dot { background: var(--up); }
+.fetch-badge.error { color: #f97316; border-color: rgba(249, 115, 22, 0.5); }
+.fetch-badge.error .fetch-dot { background: #f97316; }
+.fetch-badge.fetching { color: var(--text); border-color: var(--accent); }

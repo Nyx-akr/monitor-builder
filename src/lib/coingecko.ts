@@ -67,13 +67,25 @@ const buildUrl = (path: string, params: Record<string, string | number | boolean
  * A cached response (memory, then localStorage) younger than `ttlMs`, or undefined. Never hits the network.
  * `remember: false` peeks without promoting a lenient-ttl hit into the memory cache.
  */
-function cached<T>(url: string, ttlMs: number, persist: boolean, remember = true): Promise<T> | undefined {
+/** When each response actually came back from CoinGecko — a cached answer keeps its original time. */
+const fetchedAtMap = new WeakMap<object, number>()
+export const fetchedAt = (value: unknown): number | undefined =>
+  typeof value === 'object' && value !== null ? fetchedAtMap.get(value) : undefined
+/** Give a value derived from a response (e.g. `r.data`) the response's fetch time. */
+function carry<T>(from: unknown, to: T): T {
+  const at = fetchedAt(from)
+  if (at !== undefined && typeof to === 'object' && to !== null) fetchedAtMap.set(to as object, at)
+  return to
+}
+
+function cached<T>(url: string, ttlMs: number, persist: boolean, remember = true, maxAgeMs = Infinity): Promise<T> | undefined {
   const hit = cache.get(url)
-  if (hit && Date.now() - hit.at < hit.ttl) return hit.data as Promise<T>
+  if (hit && Date.now() - hit.at < Math.min(hit.ttl, maxAgeMs)) return hit.data as Promise<T>
   if (!persist) return undefined
   try {
     const saved = JSON.parse(localStorage.getItem(PERSIST_PREFIX + url) || 'null') as { at: number; data: T } | null
-    if (saved && Date.now() - saved.at < ttlMs) {
+    if (saved && Date.now() - saved.at < Math.min(ttlMs, maxAgeMs)) {
+      if (typeof saved.data === 'object' && saved.data !== null) fetchedAtMap.set(saved.data as object, saved.at)
       const data = Promise.resolve(saved.data)
       if (remember) cache.set(url, { at: saved.at, ttl: ttlMs, data })
       return data
@@ -93,11 +105,18 @@ async function request<T>(
   params: Record<string, string | number | boolean | undefined>,
   ttlMs: number,
   persist = false,
+  /** Ask CoinGecko again if the cached answer is older than this (a card's input wants fresh data). */
+  maxAgeMs = Infinity,
 ): Promise<T> {
   const url = buildUrl(path, params)
-  const hit = cached<T>(url, ttlMs, persist)
+  const hit = cached<T>(url, ttlMs, persist, true, maxAgeMs)
   if (hit) return hit
-  if (Date.now() < blockedUntil) throw blockedError()
+  if (Date.now() < blockedUntil) {
+    // Rate-limited: an older cached answer (with its real fetch time) beats nothing.
+    const stale = cached<T>(url, ttlMs, persist)
+    if (stale) return stale
+    throw blockedError()
+  }
 
   const data = (async () => {
     await waitForSlot()
@@ -115,7 +134,9 @@ async function request<T>(
       throw blockedError()
     }
     if (!res.ok) throw new Error(`CoinGecko responded ${res.status}`)
-    return res.json() as Promise<T>
+    const json = (await res.json()) as T
+    if (typeof json === 'object' && json !== null) fetchedAtMap.set(json as object, Date.now())
+    return json
   })()
   cache.set(url, { at: Date.now(), ttl: ttlMs, data })
   data.then(
@@ -325,7 +346,8 @@ const marketsParams = (opts: MarketsOpts) => ({
   price_change_percentage: '1h,24h,7d,30d,1y',
 })
 
-export const getMarkets = (opts: MarketsOpts = {}) => request<CoinMarket[]>('/coins/markets', marketsParams(opts), 10 * MIN, true)
+export const getMarkets = (opts: MarketsOpts = {}, maxAgeMs?: number) =>
+  request<CoinMarket[]>('/coins/markets', marketsParams(opts), 10 * MIN, true, maxAgeMs)
 
 /** Search coins by name or symbol. Results are kept for a day — a symbol's matches rarely change. */
 export const searchCoins = (query: string) =>
@@ -343,20 +365,31 @@ export async function resolveCoin(token: string): Promise<SearchCoin | null> {
     return { id: known.id, name: known.name, symbol: known.symbol, market_cap_rank: known.market_cap_rank, thumb: known.image, large: known.image }
   }
   const coins = await searchCoins(q)
-  return coins.find((c) => c.id === q) ?? coins.find((c) => c.symbol.toLowerCase() === q) ?? coins[0] ?? null
+  // CoinGecko's search is fuzzy; only accept a coin whose id, symbol or name really matches.
+  const name = (c: SearchCoin) => c.name.toLowerCase()
+  return (
+    coins.find((c) => c.id === q) ??
+    coins.find((c) => c.symbol.toLowerCase() === q) ??
+    coins.find((c) => name(c) === q) ??
+    coins.find((c) => c.symbol.toLowerCase().startsWith(q) || name(c).startsWith(q)) ??
+    null
+  )
 }
 
 /** Top 15 trending coins on CoinGecko in the last 24h. */
-export const getTrending = () =>
-  request<{ coins: { item: TrendingCoin }[] }>('/search/trending', {}, 5 * MIN, true).then((r) => r.coins.map((c) => c.item))
+export const getTrending = (maxAgeMs?: number) =>
+  request<{ coins: { item: TrendingCoin }[] }>('/search/trending', {}, 5 * MIN, true, maxAgeMs).then((r) =>
+    carry(r, r.coins.map((c) => c.item)),
+  )
 
 /** Full profile: description, links, categories, contract addresses and detailed market data. */
-export const getCoin = (id: string) =>
+export const getCoin = (id: string, maxAgeMs?: number) =>
   request<CoinDetail>(
     `/coins/${id}`,
     { localization: false, tickers: false, community_data: false, developer_data: false, sparkline: true },
     MIN,
     true,
+    maxAgeMs,
   )
 
 /**
@@ -383,7 +416,8 @@ export const getOhlc = (id: string, days: 1 | 7 | 14 | 30 | 90 | 180 | 365 = 7, 
   request<Candle[]>(`/coins/${id}/ohlc`, { vs_currency: vsCurrency, days }, 5 * MIN)
 
 /** Whole-market stats: total market cap, volume, BTC/ETH dominance. */
-export const getGlobal = () => request<{ data: GlobalData }>('/global', {}, 5 * MIN).then((r) => r.data)
+export const getGlobal = (maxAgeMs?: number) =>
+  request<{ data: GlobalData }>('/global', {}, 10 * MIN, true, maxAgeMs).then((r) => carry(r, r.data))
 
 /** Sectors (Meme, AI, DeFi, Layer 1…) with market cap and 24h change. */
 export const getCategories = () => request<Category[]>('/coins/categories', {}, 10 * MIN)
@@ -400,3 +434,11 @@ export const DEX_TO_GECKO_PLATFORM: Record<string, string> = {
   sui: 'sui',
   ton: 'the-open-network',
 }
+
+/**
+ * How fresh a card's input asks CoinGecko to be. Its free data only updates about once a minute, and asking
+ * more often gets the network rate-limited — so an answer younger than this is reused (with its real time).
+ */
+export const FRESH_ENOUGH_MS = 60_000
+
+export { carry as carryFetchedAt }

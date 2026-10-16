@@ -7,7 +7,9 @@ const STATUS_TEXT: Record<SaveStatus, string> = {
   saved: 'Saved',
   unsaved: 'Unsaved',
   saving: 'Saving…',
-  error: 'Save failed',
+  offline: 'Offline — retrying',
+  conflict: 'Conflict — click to reload',
+  error: 'Save failed — retrying',
 }
 
 /** Picks which flows/<name>.json is open, creates new flows, and shows autosave state. */
@@ -19,6 +21,7 @@ export function FlowSelector({
   onSwitch,
   onNew,
   onSave,
+  onReload,
 }: {
   flows: string[]
   current: string | null
@@ -27,12 +30,17 @@ export function FlowSelector({
   onSwitch: (name: string) => void
   onNew: () => void
   onSave: () => void
+  /** After a conflict: load the version on disk. */
+  onReload: () => void
 }) {
   return (
     <div className="flow-selector">
       <button
         className={`flow-status ${status}`}
-        onClick={onSave}
+        onClick={() => {
+          if (status !== 'conflict') return onSave()
+          if (confirm(`${error ?? 'This flow was changed elsewhere.'}\n\nReload ${current} from disk? Changes made here since then will be dropped.`)) onReload()
+        }}
         title={error ?? (current ? `Autosaves to flows/${current}.json · click or ⌘S to save now` : '')}
       >
         <span className="dot" /> {STATUS_TEXT[status]}

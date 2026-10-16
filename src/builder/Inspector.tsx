@@ -2,6 +2,8 @@ import { blockByType } from '../blocks/registry'
 import type { BlockInstance, BlockProps, SettingField, Wire } from '../blocks/types'
 import { TokenSearch } from './TokenSearch'
 import { CoinSearch } from './CoinSearch'
+import { portsOf } from './ports'
+import { TYPE_COLORS, TYPE_LABELS, ERROR_COLOR, typesOf } from '../lib/dataTypes'
 
 function Field({ field, value, onChange }: { field: SettingField; value: BlockProps[string]; onChange: (v: BlockProps[string]) => void }) {
   let input
@@ -64,7 +66,7 @@ function PortList({
   wires: Wire[]
   onDisconnect: (wireId: string) => void
 }) {
-  const def = blockByType[block.type]
+  const def = portsOf(block)
   const labelOf = (id: string) => {
     const b = blocks.find((x) => x.id === id)
     return b ? blockByType[b.type].label : '?'
@@ -91,6 +93,13 @@ function PortList({
           <div className="port-name">
             <span className={`port-badge ${kind}`}>{kind === 'in' ? 'inlet' : 'outlet'}</span>
             <strong>{port.id}</strong>
+            <span className="type-chips">
+              {typesOf(port).map((t) => (
+                <span key={t} className="type-chip" style={{ color: port.error ? ERROR_COLOR : TYPE_COLORS[t] }}>
+                  {port.error ? 'error' : TYPE_LABELS[t]}
+                </span>
+              ))}
+            </span>
           </div>
           <small>{port.label}</small>
           {links.length === 0 ? (
@@ -140,7 +149,7 @@ export function Inspector({
       <h2>
         {def.icon} {def.label}
       </h2>
-      {def.settings.map((f) =>
+      {(def.settingsFor?.(block.props) ?? def.settings).map((f) =>
         f.type === 'tokenSearch' ? (
           <TokenSearch key={f.key} props={block.props} onChange={onChange} />
         ) : f.type === 'coinSearch' ? (

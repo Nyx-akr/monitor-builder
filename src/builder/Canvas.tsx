@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type PointerEvent, type RefObject, type SetStateAction } from 'react'
-import { useDroppable } from '@dnd-kit/core'
 import { blockByType } from '../blocks/registry'
 import type { BlockContext, BlockInstance, Port, PortRef, Wire } from '../blocks/types'
 import { GRID, type View } from './useFlow'
+import { compatible, describeTypes, portBackground, portColor } from '../lib/dataTypes'
+import { findPort, portsOf } from './ports'
+import { lastSent, previewLines, timeOf } from '../lib/lastSent'
 
 const MIN_ZOOM = 0.1
 const MAX_ZOOM = 3
@@ -26,6 +28,8 @@ interface Props {
   wires: Wire[]
   activeWires: Set<string>
   editing: boolean
+  /** A palette item is being dragged over the canvas. */
+  dropTarget: boolean
   view: View
   setView: Dispatch<SetStateAction<View>>
   viewportRef: RefObject<HTMLDivElement>
@@ -39,6 +43,51 @@ interface Props {
   onDuplicate: (id: string) => void
   onRemove: (id: string) => void
   onConnect: (from: PortRef, to: PortRef) => void
+  onDisconnect: (wireId: string) => void
+}
+
+type MenuTarget = { block: string } | { wire: string }
+type MenuItem = { label: string; hint?: string; danger?: boolean; run: () => void } | 'separator'
+
+/** Right-click menu, positioned in screen space over the canvas. */
+function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const close = (e: Event) => !ref.current?.contains(e.target as Node) && onClose()
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('pointerdown', close, true)
+    window.addEventListener('wheel', onClose, true)
+    window.addEventListener('keydown', key)
+    window.addEventListener('blur', onClose)
+    return () => {
+      window.removeEventListener('pointerdown', close, true)
+      window.removeEventListener('wheel', onClose, true)
+      window.removeEventListener('keydown', key)
+      window.removeEventListener('blur', onClose)
+    }
+  }, [onClose])
+
+  return (
+    <div ref={ref} className="ctx-menu" style={{ left: x, top: y }} onContextMenu={(e) => e.preventDefault()}>
+      {items.map((item, i) =>
+        item === 'separator' ? (
+          <div key={i} className="ctx-sep" />
+        ) : (
+          <button
+            key={i}
+            className={item.danger ? 'danger' : ''}
+            onClick={() => {
+              item.run()
+              onClose()
+            }}
+          >
+            <span>{item.label}</span>
+            {item.hint && <kbd>{item.hint}</kbd>}
+          </button>
+        ),
+      )}
+    </div>
+  )
 }
 
 function zoomAround(v: View, sx: number, sy: number, nextZoom: number): View {
@@ -52,8 +101,8 @@ const portOffset = (i: number, n: number, w: number) => (n <= 1 ? 0 : (i / (n - 
 
 /** World position of a port's connection point. */
 function portPoint(block: BlockInstance, size: Size, kind: PortKind, portId: string) {
-  const def = blockByType[block.type]
-  const ports = (kind === 'inlet' ? def.inlets : def.outlets) ?? []
+  const resolved = portsOf(block)
+  const ports = kind === 'inlet' ? resolved.inlets : resolved.outlets
   const i = Math.max(0, ports.findIndex((p) => p.id === portId))
   return {
     x: block.x + portOffset(i, ports.length, size.w) + PORT_W / 2,
@@ -97,6 +146,7 @@ function Ports({
   ports,
   editing,
   connected,
+  wiringSource,
   onPortDown,
 }: {
   block: BlockInstance
@@ -104,21 +154,32 @@ function Ports({
   ports: Port[]
   editing: boolean
   connected: Set<string>
+  /** The port a wire is being dragged from, if any — ports that can't take it are dimmed. */
+  wiringSource: { kind: PortKind; port: Port | undefined; block: string } | null
   onPortDown: (ref: PortRef, kind: PortKind, e: PointerEvent) => void
 }) {
+  const fitClass = (p: Port) => {
+    if (!wiringSource) return ''
+    if (wiringSource.kind === kind || wiringSource.block === block.id) return ' dim'
+    const fits = kind === 'inlet' ? compatible(wiringSource.port, p) : compatible(p, wiringSource.port)
+    return fits ? ' can-connect' : ' dim'
+  }
   return (
     <>
       {ports.map((p, i) => (
         <span
           key={p.id}
           data-port={`${block.id}|${p.id}|${kind}`}
-          className={`port ${kind}${connected.has(`${kind}:${p.id}`) ? ' connected' : ''}`}
+          className={`port ${kind}${p.error ? ' error' : ''}${connected.has(`${kind}:${p.id}`) ? ' connected' : ''}${fitClass(p)}`}
           style={{
             left: ports.length <= 1 ? 0 : `calc((100% - ${PORT_W}px) * ${i / (ports.length - 1)})`,
             width: PORT_W,
             height: PORT_H,
+            background: portBackground(p),
+            color: portColor(p),
           }}
-          title={`${kind === 'inlet' ? 'Inlet' : 'Outlet'} · ${p.label}`}
+          // Shown instantly by the canvas's own tooltip (a native title waits ~1s).
+          data-tip={`${kind === 'inlet' ? 'inlet' : 'outlet'}|${p.id}|${p.label}|${p.error ? 'error' : ''}|${describeTypes(p)}`}
           onPointerDown={(e) => {
             if (!editing || e.button !== 0) return
             e.stopPropagation()
@@ -141,10 +202,10 @@ function BlockFrame({
   ctx,
   onSelect,
   onMove,
-  onDuplicate,
-  onRemove,
+  onMenu,
   onSize,
   onPortDown,
+  wiringSource,
 }: {
   block: BlockInstance
   editing: boolean
@@ -155,15 +216,20 @@ function BlockFrame({
   ctx: BlockContext
   onSelect: (id: string) => void
   onMove: (id: string, x: number, y: number) => void
-  onDuplicate: (id: string) => void
-  onRemove: (id: string) => void
+  onMenu: (target: { block: string }, clientX: number, clientY: number) => void
   onSize: (id: string, size: Size) => void
   onPortDown: (ref: PortRef, kind: PortKind, e: PointerEvent) => void
+  wiringSource: { kind: PortKind; port: Port | undefined; block: string } | null
 }) {
   const def = blockByType[block.type]
+  const ports = portsOf(block)
   const ref = useRef<HTMLDivElement>(null)
-  const drag = useRef<{ sx: number; sy: number; bx: number; by: number; moved: boolean; pointer: number } | null>(null)
   const [dragging, setDragging] = useState(false)
+  // The drag listeners live on window, so they read the latest zoom / onMove through refs.
+  const latest = useRef({ zoom, onMove })
+  latest.current = { zoom, onMove }
+  const stopDrag = useRef<(() => void) | null>(null)
+  useEffect(() => () => stopDrag.current?.(), [])
 
   // Wires attach to the block's edges, so the canvas needs its rendered size.
   useEffect(() => {
@@ -176,38 +242,57 @@ function BlockFrame({
     return () => ro.disconnect()
   }, [block.id, onSize])
 
+  /**
+   * Moving a block. Move/release are tracked on window from the moment of the press, so a fast mouse
+   * that leaves a small block (a bang, a message box) before the drag starts can never strand it
+   * "stuck" to the cursor. Any move with no button held also ends the drag.
+   */
   const onPointerDown = (e: PointerEvent) => {
     // Middle button or space+drag pans the canvas, even over a block.
     if (!editing || e.button !== 0 || spaceHeld) return
     if ((e.target as HTMLElement).closest(INTERACTIVE)) return
     e.stopPropagation()
-    drag.current = { sx: e.clientX, sy: e.clientY, bx: block.x, by: block.y, moved: false, pointer: e.pointerId }
+    stopDrag.current?.()
     onSelect(block.id)
-  }
 
-  const onPointerMove = (e: PointerEvent) => {
-    const d = drag.current
-    if (!d) return
-    const dx = e.clientX - d.sx
-    const dy = e.clientY - d.sy
-    if (!d.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
-    if (!d.moved) {
-      // Capture only once it's a real drag, so a plain click still reaches the block's content
-      // (e.g. a message box's click-to-send).
-      try {
-        e.currentTarget.setPointerCapture(d.pointer)
-      } catch {
-        /* pointer already released */
-      }
-      setDragging(true)
+    const start = { x: e.clientX, y: e.clientY, bx: block.x, by: block.y, pointer: e.pointerId }
+    let moved = false
+
+    const move = (ev: globalThis.PointerEvent) => {
+      if (ev.pointerId !== start.pointer) return
+      if (ev.buttons === 0) return finish() // released somewhere we didn't hear about
+      const dx = ev.clientX - start.x
+      const dy = ev.clientY - start.y
+      if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
+      if (!moved) setDragging(true)
+      moved = true
+      const { zoom: z, onMove: mv } = latest.current
+      mv(block.id, start.bx + dx / z, start.by + dy / z)
     }
-    d.moved = true
-    onMove(block.id, d.bx + dx / zoom, d.by + dy / zoom)
-  }
+    const up = (ev: globalThis.PointerEvent) => ev.pointerId === start.pointer && finish()
+    const finish = () => {
+      window.removeEventListener('pointermove', move, true)
+      window.removeEventListener('pointerup', up, true)
+      window.removeEventListener('pointercancel', up, true)
+      window.removeEventListener('blur', finish)
+      stopDrag.current = null
+      setDragging(false)
+      if (moved) {
+        // The click that follows a drag must not reach the block (e.g. send a message box).
+        const swallow = (ce: MouseEvent) => {
+          ce.stopPropagation()
+          ce.preventDefault()
+        }
+        window.addEventListener('click', swallow, { capture: true, once: true })
+        setTimeout(() => window.removeEventListener('click', swallow, true), 0)
+      }
+    }
 
-  const endDrag = () => {
-    drag.current = null
-    setDragging(false)
+    window.addEventListener('pointermove', move, true)
+    window.addEventListener('pointerup', up, true)
+    window.addEventListener('pointercancel', up, true)
+    window.addEventListener('blur', finish)
+    stopDrag.current = finish
   }
 
   return (
@@ -217,31 +302,33 @@ function BlockFrame({
       className={`block-frame${editing ? ' editable' : ''}${selected ? ' selected' : ''}${dragging ? ' dragging' : ''}`}
       style={{ left: block.x, top: block.y, width: def.width ?? 'max-content' }}
       onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={endDrag}
-      onPointerCancel={endDrag}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        onMenu({ block: block.id }, e.clientX, e.clientY)
+      }}
     >
       {editing && (
         <div className="block-toolbar">
           <span className="block-label">⠿ {def.label}</span>
-          <span className="toolbar-actions">
-            <button onClick={() => onDuplicate(block.id)} title="Duplicate">⧉</button>
-            <button onClick={() => onRemove(block.id)} title="Delete">✕</button>
-          </span>
         </div>
       )}
       <def.Render props={block.props} ctx={ctx} />
-      <Ports block={block} kind="inlet" ports={def.inlets ?? []} editing={editing} connected={connected} onPortDown={onPortDown} />
-      <Ports block={block} kind="outlet" ports={def.outlets ?? []} editing={editing} connected={connected} onPortDown={onPortDown} />
+      <Ports block={block} kind="inlet" ports={ports.inlets} editing={editing} connected={connected} wiringSource={wiringSource} onPortDown={onPortDown} />
+      <Ports block={block} kind="outlet" ports={ports.outlets} editing={editing} connected={connected} wiringSource={wiringSource} onPortDown={onPortDown} />
     </div>
   )
 }
+
+/** A port label without its leading one-word name ("info — the market summary" → "The market summary"). */
+const tipText = (label: string) => label.replace(/^\S+ — /, '').replace(/^./, (c) => c.toUpperCase())
 
 export function Canvas({
   blocks,
   wires,
   activeWires,
   editing,
+  dropTarget,
   view,
   setView,
   viewportRef,
@@ -252,9 +339,65 @@ export function Canvas({
   onSelectWire,
   onDeselect,
   onConnect,
-  ...actions
+  onDisconnect,
+  onMove,
+  onDuplicate,
+  onRemove,
 }: Props) {
-  const { setNodeRef, isOver } = useDroppable({ id: 'canvas' })
+  const [menu, setMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null)
+  const [tip, setTip] = useState<{
+    x: number
+    y: number
+    below: boolean
+    kind: string
+    id: string
+    label: string
+    types: string
+    error: boolean
+    /** For outlets: what came out of it last, and when. */
+    last?: { lines: string[]; at: number }
+  } | null>(null)
+
+  // Instant port tooltip: one listener for the whole canvas instead of a slow native title per port.
+  const onPointerOver = (e: PointerEvent) => {
+    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-tip]')
+    if (!el) return
+    const [kind, id, label, error, types] = el.dataset.tip!.split('|')
+    const blockId = el.dataset.port?.split('|')[0]
+    const sentLast = kind === 'outlet' && blockId ? lastSent(blockId, id) : undefined
+    const last = sentLast ? { lines: previewLines(sentLast.msg), at: sentLast.at } : undefined
+    const vp = viewportRef.current!.getBoundingClientRect()
+    const r = el.getBoundingClientRect()
+    const below = kind === 'outlet'
+    setTip({ x: r.left + r.width / 2 - vp.left, y: (below ? r.bottom : r.top) - vp.top, below, kind, id, label, types, error: error === 'error', last })
+  }
+  const onPointerOut = (e: PointerEvent) => {
+    if ((e.target as HTMLElement).closest('[data-tip]')) setTip(null)
+  }
+  const closeMenu = useCallback(() => setMenu(null), [])
+
+  const openMenu = (target: MenuTarget, clientX: number, clientY: number) => {
+    if (!editing) return
+    const r = viewportRef.current!.getBoundingClientRect()
+    if ('block' in target) onSelect(target.block)
+    else onSelectWire(target.wire)
+    setMenu({ x: clientX - r.left, y: clientY - r.top, target })
+  }
+
+  const menuItems = (target: MenuTarget): MenuItem[] => {
+    if ('wire' in target) return [{ label: 'Delete wire', hint: '⌫', danger: true, run: () => onDisconnect(target.wire) }]
+    const block = blocks.find((b) => b.id === target.block)
+    if (!block) return []
+    const def = blockByType[block.type]
+    const own = (def.menu ?? []).map((m) => ({ label: m.label, run: () => m.run(makeCtx(block.id)) }))
+    return [
+      ...own,
+      ...(own.length ? (['separator'] as const) : []),
+      { label: 'Duplicate', run: () => onDuplicate(block.id) },
+      { label: 'Delete', hint: '⌫', danger: true, run: () => onRemove(block.id) },
+    ]
+  }
+
   const worldRef = useRef<HTMLDivElement>(null)
   const pan = useRef<{ sx: number; sy: number; vx: number; vy: number; moved: boolean } | null>(null)
   const [panning, setPanning] = useState(false)
@@ -317,6 +460,14 @@ export function Canvas({
     const el = viewportRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
+      setTip(null) // ports move when zooming; a tooltip would point at the old spot
+      // A scrollable list inside a block (e.g. a message box holding a list) scrolls instead of zooming.
+      const scroller = (e.target as HTMLElement).closest<HTMLElement>('.scroll-y')
+      if (scroller && !e.ctrlKey) {
+        const atTop = scroller.scrollTop <= 0
+        const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1
+        if (scroller.scrollHeight > scroller.clientHeight && !((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom))) return
+      }
       e.preventDefault()
       const r = el.getBoundingClientRect()
       // Normalise line/page deltas to pixels so every mouse zooms at the same speed.
@@ -345,6 +496,12 @@ export function Canvas({
   const onPointerMove = (e: PointerEvent) => {
     const p = pan.current
     if (!p) return
+    // Button already up (release happened outside where we could hear it): stop panning.
+    if (e.buttons === 0) {
+      pan.current = null
+      setPanning(false)
+      return
+    }
     const dx = e.clientX - p.sx
     const dy = e.clientY - p.sy
     if (!p.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
@@ -397,6 +554,7 @@ export function Canvas({
   }, [])
 
   const byId = new Map(blocks.map((b) => [b.id, b]))
+  const wiringSource = wiring ? { kind: wiring.kind, block: wiring.from.block, port: findPort(blocks, wiring.from, wiring.kind) } : null
   const connectedPorts = (blockId: string) => {
     const set = new Set<string>()
     for (const w of wires) {
@@ -410,7 +568,9 @@ export function Canvas({
     const a = byId.get(w.from.block)
     const b = byId.get(w.to.block)
     if (!a || !b || !sizes[a.id] || !sizes[b.id]) return []
-    return [{ wire: w, d: cordPath(portPoint(a, sizes[a.id], 'outlet', w.from.port), portPoint(b, sizes[b.id], 'inlet', w.to.port)) }]
+    const outlet = findPort(blocks, w.from, 'outlet')
+    const fits = compatible(outlet, findPort(blocks, w.to, 'inlet'))
+    return [{ wire: w, color: portColor(outlet), fits, d: cordPath(portPoint(a, sizes[a.id], 'outlet', w.from.port), portPoint(b, sizes[b.id], 'inlet', w.to.port)) }]
   })
 
   let draft: string | null = null
@@ -426,11 +586,8 @@ export function Canvas({
 
   return (
     <div
-      ref={(el) => {
-        setNodeRef(el)
-        ;(viewportRef as { current: HTMLDivElement | null }).current = el
-      }}
-      className={`canvas${editing ? '' : ' preview'}${isOver ? ' over' : ''}${panning ? ' panning' : spaceHeld ? ' can-pan' : ''}${
+      ref={viewportRef}
+      className={`canvas${editing ? '' : ' preview'}${dropTarget ? ' over' : ''}${panning ? ' panning' : spaceHeld ? ' can-pan' : ''}${
         wiring ? ` wiring from-${wiring.kind}` : ''
       }`}
       style={{ backgroundSize: `${grid}px ${grid}px`, backgroundPosition: `${view.x}px ${view.y}px` }}
@@ -438,24 +595,32 @@ export function Canvas({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      onPointerOver={onPointerOver}
+      onPointerOut={onPointerOut}
     >
       <div ref={worldRef} className="world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
         <svg className="wires">
-          {wirePaths.map(({ wire, d }) => (
+          {wirePaths.map(({ wire, d, color, fits }) => (
             <g
               key={wire.id}
-              className={`wire${selectedWireId === wire.id ? ' selected' : ''}${activeWires.has(wire.id) ? ' active' : ''}`}
+              className={`wire${fits ? '' : ' mismatch'}${selectedWireId === wire.id ? ' selected' : ''}${activeWires.has(wire.id) ? ' active' : ''}`}
+              style={{ '--wire': color } as React.CSSProperties}
               onPointerDown={(e) => {
-                if (!editing) return
+                if (!editing || e.button !== 0) return
                 e.stopPropagation()
                 onSelectWire(wire.id)
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                openMenu({ wire: wire.id }, e.clientX, e.clientY)
               }}
             >
               <path className="wire-hit" d={d} />
               <path className="wire-line" d={d} />
             </g>
           ))}
-          {draft && <path className="wire-line draft" d={draft} />}
+          {draft && <path className="wire-line draft" d={draft} style={{ stroke: portColor(wiringSource?.port) }} />}
         </svg>
 
         {blocks.map((b) => (
@@ -467,11 +632,13 @@ export function Canvas({
             spaceHeld={spaceHeld}
             selected={editing && selectedId === b.id}
             connected={connectedPorts(b.id)}
+            wiringSource={wiringSource}
             ctx={makeCtx(b.id)}
             onSelect={onSelect}
             onSize={onSize}
             onPortDown={onPortDown}
-            {...actions}
+            onMove={onMove}
+            onMenu={openMenu}
           />
         ))}
       </div>
@@ -491,9 +658,35 @@ export function Canvas({
         <button onClick={() => zoomBy(1.2)} title="Zoom in">+</button>
         <button onClick={fit} title="Fit all blocks (Shift+1)">Fit</button>
       </div>
+      {tip && !menu && (
+        <div className={`port-tip${tip.below ? ' below' : ''}${tip.error ? ' error' : ''}`} style={{ left: tip.x, top: tip.y }}>
+          {/* Just the explanation: a label's leading port name ("info — …") isn't repeated here. */}
+          <div className="port-tip-label">{tipText(tip.label)}</div>
+          <div className="port-tip-types">
+            {tip.kind === 'inlet' ? 'accepts' : 'sends'}: <b>{tip.types}</b>
+          </div>
+          {tip.kind === 'outlet' && (
+            <div className="port-tip-last">
+              {tip.last ? (
+                <>
+                  <span className="port-tip-last-head">Last sent · {timeOf(tip.last.at)}</span>
+                  {tip.last.lines.map((line, i) => (
+                    <span key={i} className={i === 0 ? 'port-tip-last-main' : ''}>
+                      {line}
+                    </span>
+                  ))}
+                </>
+              ) : (
+                <span className="port-tip-last-head">Nothing sent yet</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems(menu.target)} onClose={closeMenu} />}
       {editing && (
         <div className="canvas-hint">
-          Drag outlet → inlet to wire · click a wire + Delete to cut · scroll to zoom · drag empty space to pan
+          Drag outlet → inlet to wire · right-click a block or wire for options · scroll to zoom · drag empty space to pan
         </div>
       )}
     </div>

@@ -27,7 +27,7 @@ export function useDexPair(query: string, chain: string, pairAddress: string, re
         setState({
           pair,
           loading: false,
-          error: pair ? null : 'No pair found for this query',
+          error: pair ? null : `No token matching "${query.trim()}"${chain ? ` on ${chain}` : ''} on DexScreener`,
           updatedAt: Date.now(),
         })
       } catch (e) {

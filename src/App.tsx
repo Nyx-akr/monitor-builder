@@ -1,56 +1,43 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  DndContext,
-  DragOverlay,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type DragStartEvent,
-} from '@dnd-kit/core'
 import { blockByType } from './blocks/registry'
-import { Palette, PaletteCard } from './builder/Palette'
+import { Palette, PaletteCard, type PaletteDrag } from './builder/Palette'
 import { Canvas } from './builder/Canvas'
 import { Inspector } from './builder/Inspector'
 import { FlowSelector } from './builder/FlowSelector'
 import { useFlow } from './builder/useFlow'
+import type { BlockProps } from './blocks/types'
 import { useRuntime } from './builder/useRuntime'
 
 export default function App() {
   const flow = useFlow()
   const { view } = flow
   const [editing, setEditing] = useState(true)
-  const [draggingType, setDraggingType] = useState<string | null>(null)
+  const [paletteDrag, setPaletteDrag] = useState<PaletteDrag | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const runtime = useRuntime({ blocks: flow.blocks, wires: flow.wires, editing, update: flow.update })
-
-  const sensors = useSensors(
-    // A small distance lets palette items still be clicked to add.
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-  )
 
   /** Screen point (relative to the canvas) → world coordinates. */
   const toWorld = (sx: number, sy: number) => ({ x: (sx - view.x) / view.zoom, y: (sy - view.y) / view.zoom })
 
-  const onDragStart = ({ active }: DragStartEvent) => {
-    if (active.data.current?.from === 'palette') setDraggingType(active.data.current.type)
+  /** Is a screen point over the canvas? */
+  const overCanvas = (x: number, y: number) => {
+    const vp = viewportRef.current?.getBoundingClientRect()
+    return Boolean(vp && x >= vp.left && x <= vp.right && y >= vp.top && y <= vp.bottom)
   }
 
-  const onDragEnd = ({ active, over }: DragEndEvent) => {
-    setDraggingType(null)
-    const dropped = active.rect.current.translated
-    if (over?.id !== 'canvas' || !dropped || !viewportRef.current) return
-    const vp = viewportRef.current.getBoundingClientRect()
-    // Place the block's top-left where the ghost card's top-left was released.
-    const { x, y } = toWorld(dropped.left - vp.left, dropped.top - vp.top)
-    flow.add(active.data.current!.type, x, y)
+  /** Released a palette item: place the block's top-left where the ghost card's top-left is. */
+  const onPaletteDrop = (drag: PaletteDrag) => {
+    if (!overCanvas(drag.x, drag.y)) return
+    const vp = viewportRef.current!.getBoundingClientRect()
+    const { x, y } = toWorld(drag.x - drag.grabX - vp.left, drag.y - drag.grabY - vp.top)
+    flow.add(drag.type, x, y, drag.props)
   }
 
-  const addAtCenter = (type: string) => {
+  const addAtCenter = (type: string, props?: Partial<BlockProps>) => {
     const vp = viewportRef.current!.getBoundingClientRect()
     const center = toWorld(vp.width / 2, vp.height / 3)
     const cascade = (flow.blocks.length % 5) * 32
-    flow.add(type, center.x - (blockByType[type].width ?? 120) / 2 + cascade, center.y + cascade)
+    flow.add(type, center.x - (blockByType[type].width ?? 120) / 2 + cascade, center.y + cascade, props)
   }
 
   // Delete / Backspace removes the selected block or wire, Escape deselects, ⌘S saves now.
@@ -106,18 +93,19 @@ export default function App() {
             onSwitch={flow.switchFlow}
             onNew={flow.newFlow}
             onSave={flow.saveNow}
+            onReload={flow.reloadFromDisk}
           />
         </div>
       </header>
 
-      <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDraggingType(null)}>
-        <div className="workspace">
-          {editing && <Palette onAdd={addAtCenter} />}
+      <div className="workspace">
+          {editing && <Palette onAdd={addAtCenter} onDrag={setPaletteDrag} onDrop={onPaletteDrop} />}
           <Canvas
             blocks={flow.blocks}
             wires={flow.wires}
             activeWires={runtime.activeWires}
             editing={editing}
+            dropTarget={Boolean(paletteDrag && overCanvas(paletteDrag.x, paletteDrag.y))}
             view={view}
             setView={flow.setView}
             viewportRef={viewportRef}
@@ -134,6 +122,7 @@ export default function App() {
             onDuplicate={flow.duplicate}
             onRemove={flow.remove}
             onConnect={flow.connect}
+            onDisconnect={flow.disconnect}
           />
           {editing && (
             <Inspector
@@ -144,11 +133,12 @@ export default function App() {
               onDisconnect={flow.disconnect}
             />
           )}
+      </div>
+      {paletteDrag && (
+        <div className="drag-ghost" style={{ left: paletteDrag.x - paletteDrag.grabX, top: paletteDrag.y - paletteDrag.grabY }}>
+          <PaletteCard def={blockByType[paletteDrag.type]} card={paletteDrag.card} ghost />
         </div>
-        <DragOverlay dropAnimation={null}>
-          {draggingType && <PaletteCard def={blockByType[draggingType]} ghost />}
-        </DragOverlay>
-      </DndContext>
+      )}
     </div>
   )
 }

@@ -1,6 +1,10 @@
 import { useCallback, useRef, useState } from 'react'
 import { blockByType } from '../blocks/registry'
 import type { BlockContext, BlockInstance, BlockProps, Message, Wire } from '../blocks/types'
+import { logText } from '../lib/messages'
+import { accepts, typeOfMessage, typesOf } from '../lib/dataTypes'
+import { portsOf } from './ports'
+import { recordSent } from '../lib/lastSent'
 
 /** A loop of wires (A → B → A) would otherwise run forever; Max calls this a stack overflow. */
 const MAX_DEPTH = 64
@@ -64,17 +68,23 @@ export function useRuntime(opts: {
 
   const send = (fromBlock: string, outlet: string, msg: Message, depth: number) => {
     if (depth >= MAX_DEPTH) {
-      console.warn(`[dex-builder] stack overflow: message "${msg}" looped through ${MAX_DEPTH} wires — check for a feedback loop`)
+      console.warn(`[dex-builder] stack overflow: message "${logText(msg)}" looped through ${MAX_DEPTH} wires — check for a feedback loop`)
       return
     }
+    // Remember it for the outlet's hover preview — even when nothing is wired to it yet.
+    recordSent(fromBlock, outlet, msg)
     for (const wire of wiresRef.current) {
       if (wire.from.block !== fromBlock || wire.from.port !== outlet) continue
       const target = blocksRef.current.find((b) => b.id === wire.to.block)
       const def = target && blockByType[target.type]
       if (!target || !def?.receive) continue
+      // Typed inlets ignore messages of other types (e.g. a string reaching a bang-only trigger).
+      const inlet = portsOf(target).inlets.find((p) => p.id === wire.to.port)
+      if (!inlet) continue // its inlet no longer exists (e.g. a Join's input count was lowered)
+      if (!accepts(typesOf(inlet), typeOfMessage(msg))) continue
       flash(wire.id)
       Promise.resolve(def.receive(makeCtx(target.id, depth + 1), wire.to.port, msg)).catch((e) =>
-        console.error(`[dex-builder] ${def.label} failed to handle "${msg}":`, e),
+        console.error(`[dex-builder] ${def.label} failed to handle "${logText(msg)}":`, e),
       )
     }
   }

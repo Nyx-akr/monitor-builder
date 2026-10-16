@@ -14,12 +14,48 @@
 @keyframes msg-flash {
   from { background: var(--accent); color: #fff; }
 }
-.msg.editing { cursor: text; border-color: var(--accent); }
-.msg input {
+/* Holding a list or dictionary received on the inlet. */
+.msg.structured {
+  width: 400px;
+  padding: 0;
+  white-space: normal;
+  cursor: default;
+  overflow: hidden;
+}
+.msg-head {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  cursor: pointer;
+}
+.msg-head:hover { color: var(--text); }
+.msg-list, .msg-dict { max-height: 300px; overflow-y: auto; }
+.msg-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
   background: none;
   border: 0;
-  outline: none;
-  padding: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 5px 12px;
+  text-align: left;
   font: inherit;
-  color: inherit;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
 }
+.msg-row:last-child { border-bottom: 0; }
+.msg-row:hover { background: var(--card); color: var(--accent); }
+.msg-index { color: var(--muted); min-width: 24px; text-align: right; }
+.msg-row-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-dict { padding: 6px 12px; cursor: pointer; }
+.msg-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  padding: 2px 0;
+}
+.msg-kv span { color: var(--muted); }
+.msg-kv strong { font-weight: 500; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-empty { color: var(--muted); font-style: italic; }

@@ -1,6 +1,12 @@
-import type { BlockDefinition } from '../../types'
-import { CHAINS } from '../../../lib/dexscreener'
+import { useEffect } from 'react'
+import type { BlockContext, BlockDefinition, Message } from '../../types'
+import { CHAINS, findPair, type DexPair } from '../../../lib/dexscreener'
+import { getTokenList, LIST_SOURCES, type ListSource } from '../../../lib/tokenLists'
 import { useDexPair } from '../../../lib/useDexPair'
+import { track } from '../../../lib/fetchState'
+import { forgetSent } from '../../../lib/lastSent'
+import { FetchBadge } from '../../../builder/FetchBadge'
+import { emitOnce, errorMessage, isBang, isTokenItem, type TokenItem } from '../../../lib/messages'
 import { age, percent, shortAddress, usdCompact, usdPrice } from '../../../lib/format'
 import './tokenCard.css'
 
@@ -13,12 +19,102 @@ type Props = {
   showChanges: boolean
   showTxns: boolean
   showLinks: boolean
+  /** Which DexScreener list a bang sends out of the `list` outlet. */
+  listSource: string
+  /** Send the pair's details out of `data` every time they load or refresh. */
+  outputOnUpdate: boolean
+}
+
+// ---------- messages this card sends ----------
+
+/** One pair as a token item — used for `data` and for each entry of `list`. */
+function pairItem(p: DexPair): TokenItem {
+  return {
+    source: 'dexscreener',
+    symbol: p.baseToken.symbol,
+    name: p.baseToken.name,
+    address: p.baseToken.address,
+    chain: p.chainId,
+    pair: p.pairAddress,
+    quote: p.quoteToken.symbol,
+    dex: p.dexId,
+    price: p.priceUsd ? Number(p.priceUsd) : null,
+    change24h: p.priceChange?.h24 ?? null,
+    liquidity: p.liquidity?.usd ?? null,
+    marketCap: p.marketCap ?? null,
+    volume24h: p.volume?.h24 ?? null,
+    buys24h: p.txns?.h24?.buys ?? null,
+    sells24h: p.txns?.h24?.sells ?? null,
+    url: p.url,
+  }
+}
+
+/**
+ * bang: send everything that doesn't need a selected token — `info` (list size, tokens per chain,
+ * totals) and `list` (each token as an item) — plus `data` if a token is selected. Right-to-left, like Max.
+ */
+async function bang(ctx: BlockContext<Props>) {
+  const { listSource, chain, query, pairAddress } = ctx.props
+  const source = (LIST_SOURCES.some((s) => s.value === listSource) ? listSource : 'trending') as ListSource
+  const [list, pair] = await Promise.allSettled([
+    // An input asked for data: get the list fresh from DexScreener, not from the 60-second cache.
+    track(ctx.id, getTokenList(source, true)),
+    query || pairAddress ? track(ctx.id, findPair(query, chain, pairAddress)) : Promise.resolve(null),
+  ])
+
+  const items = list.status === 'fulfilled' ? list.value.filter((p) => !chain || p.chainId === chain).map(pairItem) : []
+  const perChain: Record<string, number> = {}
+  for (const i of items) perChain[i.chain!] = (perChain[i.chain!] ?? 0) + 1
+  const info: Record<string, Message> = {
+    source: 'dexscreener',
+    list: LIST_SOURCES.find((s) => s.value === source)!.label.toLowerCase(),
+    tokens: items.length,
+    chains: perChain,
+    totalLiquidity: items.reduce((n, i) => n + (i.liquidity ?? 0), 0),
+    totalVolume24h: items.reduce((n, i) => n + (i.volume24h ?? 0), 0),
+    chainFilter: chain || 'any',
+    selected: ctx.props.pairLabel || query || null,
+  }
+  const failed = [list, pair].find((r): r is PromiseRejectedResult => r.status === 'rejected')
+  if (failed) info.error = (failed.reason as Error).message
+
+  ctx.send('info', info)
+  if (list.status === 'fulfilled') ctx.send('list', items)
+  if (pair.status === 'fulfilled' && pair.value) emitOnce(ctx, 'data', pair.value.pairAddress, pairItem(pair.value), true)
+  else if (query || pairAddress) {
+    const why = pair.status === 'rejected' ? (pair.reason as Error).message : `No token matching "${query.trim()}" on DexScreener`
+    emitOnce(ctx, 'error', why, errorMessage('dexscreener', query, why), true)
+  }
+}
+
+/** A token arrived on the (hot) inlet: look it up and send its details out of `data`, even if unchanged. */
+async function sendData(ctx: BlockContext<Props>) {
+  const { query, chain, pairAddress } = ctx.props
+  if (!query && !pairAddress) return
+  try {
+    const pair = await track(ctx.id, findPair(query, chain, pairAddress))
+    // An input always gets an answer (force); only the card's own reload is de-duplicated against it.
+    if (pair) return emitOnce(ctx, 'data', pair.pairAddress, pairItem(pair), true)
+    const why = `No token matching "${query.trim()}"${chain ? ` on ${chain}` : ''} on DexScreener`
+    emitOnce(ctx, 'error', why, errorMessage('dexscreener', query, why))
+  } catch (e) {
+    emitOnce(ctx, 'error', (e as Error).message, errorMessage('dexscreener', query, (e as Error).message))
+  }
 }
 
 const WINDOWS = ['m5', 'h1', 'h6', 'h24'] as const
 
-function TokenCard({ props }: { props: Props }) {
+function TokenCard({ props, ctx }: { props: Props; ctx: BlockContext<Props> }) {
   const { pair, loading, error, updatedAt } = useDexPair(props.query, props.chain, props.pairAddress ?? '', props.refreshSec)
+
+  // Live output: each load/refresh sends the pair's details out of `info`.
+  useEffect(() => {
+    if (pair && props.outputOnUpdate) emitOnce(ctx, 'data', pair.pairAddress, pairItem(pair))
+    // A failed load (e.g. a token picked in Settings that has no pair) goes out of `error`.
+    if (!pair && error) emitOnce(ctx, 'error', error, errorMessage('dexscreener', props.query, error))
+    // Only when new data arrives, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updatedAt, error])
 
   // With no pair (nothing selected, loading or an error) the full layout still renders with blank values.
   const empty = !pair
@@ -37,6 +133,7 @@ function TokenCard({ props }: { props: Props }) {
 
   return (
     <div className={`tc${empty ? ' tc-empty' : ''}`}>
+      <FetchBadge id={ctx.id} loading={loading} error={pair ? null : error} updatedAt={updatedAt} source="DexScreener" />
       {pair?.info?.header && <div className="tc-banner" style={{ backgroundImage: `url(${pair.info.header})` }} />}
 
       <div className="tc-head">
@@ -143,20 +240,79 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 export const tokenCard: BlockDefinition<Props> = {
   type: 'tokenCard',
-  label: 'Token Card',
-  description: 'Live price & stats from DexScreener',
+  label: 'DexScreener',
+  description: 'Live DEX pairs: price, liquidity, volume, trades',
   icon: '🪙',
   category: 'cards',
-  inlets: [{ id: 'token', label: 'token — address or symbol (e.g. PEPE); "solana BONK" pins a chain' }],
+  // Older flows had separate trigger / refresh inlets; a signal on `token` does the same now.
+  renamedInlets: { trigger: 'token', refresh: 'token' },
+  inlets: [
+    { id: 'token', label: 'token — address, symbol (e.g. PEPE), "solana BONK" or a token’s dict (e.g. a clicked list row) fetches it · a signal (blank token) clears the token and fetches the list & info', types: ['string', 'dict', 'bang'] },
+  ],
+  outlets: [
+    { id: 'data', label: 'data — the selected token’s details (price, liquidity, volume…)', types: ['dict'] },
+    { id: 'list', label: 'list — each token in the chosen list as an item', types: ['list'] },
+    { id: 'info', label: 'info — the market summary: counts and totals (no token needed)', types: ['dict'] },
+    { id: 'error', label: 'error — the token and why the lookup failed (not found, network…)', types: ['dict'], error: true },
+  ],
+  // Outlet descriptions follow the card's settings, so hovering shows exactly what comes out.
+  ports: (props) => {
+    const src = LIST_SOURCES.find((s) => s.value === props.listSource) ?? LIST_SOURCES.find((s) => s.value === 'trending')!
+    const token = props.pairLabel || props.query
+    return {
+      outlets: [
+        {
+          id: 'data',
+          label: `data — ${token ? `${token}${props.chain ? ` on ${props.chain}` : ''} — its` : 'the selected token’s (no token selected yet)'} details: price, liquidity, market cap, volume, buys / sells`,
+          types: ['dict'],
+        },
+        { id: 'list', label: `list — ${src.label} (${src.help}, up to 30 tokens), each with price, 24h change, liquidity and volume`, types: ['list'] },
+        { id: 'info', label: `info — summary of the ${src.label.toLowerCase()} list: token count, tokens per chain, total liquidity and volume`, types: ['dict'] },
+        { id: 'error', label: 'error — the token and why the lookup failed (not found, network…)', types: ['dict'], error: true },
+      ],
+    }
+  },
   receive: (ctx, inlet, msg) => {
-    const text = String(msg).trim()
-    if (inlet !== 'token' || !text || text === 'bang') return
-    // "<chain> <token>" pins a chain; a bare token searches every chain for its most liquid pair.
+    if (inlet !== 'token') return
+    // A plain signal (e.g. from a Timer, or an empty message box) is a blank token: clear the selected
+    // token, then fetch what needs no token (list & info). Right-click → Fetch now refreshes without clearing.
+    if (isBang(msg) || (typeof msg === 'string' && !msg.trim())) {
+      ctx.update({ query: '', pairAddress: '', pairLabel: '' })
+      forgetSent(ctx.id, 'data')
+      return bang(ctx)
+    }
+    // A token item from a list (e.g. another card's `list` outlet).
+    if (isTokenItem(msg)) {
+      if (msg.address && msg.chain) {
+        ctx.update({
+          query: msg.address,
+          chain: msg.chain,
+          pairAddress: msg.source === 'dexscreener' && msg.pair ? msg.pair : '',
+          pairLabel: msg.quote ? `${msg.symbol}/${msg.quote}` : msg.symbol,
+        })
+        return sendData(ctx)
+      }
+      msg = msg.symbol
+    }
+    const text = typeof msg === 'string' || typeof msg === 'number' ? String(msg).trim() : ''
+    if (!text) return
+    // "<chain> <token>" pins a chain; a bare token searches every chain for its most traded pair.
     const [first, ...rest] = text.split(/\s+/)
     const pinned = rest.length > 0 && CHAINS.some((c) => c.value && c.value === first.toLowerCase())
     const token = pinned ? rest.join(' ') : text
     ctx.update({ query: token, chain: pinned ? first.toLowerCase() : '', pairAddress: '', pairLabel: token })
+    return sendData(ctx)
   },
+  menu: [
+    { label: 'Fetch now', run: (ctx) => bang(ctx) },
+    {
+      label: 'Clear token',
+      run: (ctx) => {
+        ctx.update({ query: '', pairAddress: '', pairLabel: '' })
+        forgetSent(ctx.id, 'data')
+      },
+    },
+  ],
   defaultProps: {
     query: 'So11111111111111111111111111111111111111112',
     chain: 'solana',
@@ -166,6 +322,8 @@ export const tokenCard: BlockDefinition<Props> = {
     showChanges: true,
     showTxns: true,
     showLinks: true,
+    listSource: 'trending',
+    outputOnUpdate: true,
   },
   width: 560,
   settings: [
@@ -175,6 +333,14 @@ export const tokenCard: BlockDefinition<Props> = {
     { key: 'showChanges', label: 'Show price changes', type: 'toggle' },
     { key: 'showTxns', label: 'Show buys / sells', type: 'toggle' },
     { key: 'showLinks', label: 'Show links', type: 'toggle' },
+    {
+      key: 'listSource',
+      label: 'List to fetch',
+      type: 'select',
+      options: LIST_SOURCES.map((s) => ({ value: s.value, label: `${s.label} — ${s.help}` })),
+      help: 'Fetched and sent out of list when a signal arrives (or right-click → Fetch now)',
+    },
+    { key: 'outputOnUpdate', label: 'Send data out on every update', type: 'toggle' },
   ],
   Render: TokenCard,
 }

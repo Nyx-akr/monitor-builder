@@ -22,6 +22,7 @@ export function usePolling<T>(key: string, load: () => Promise<T>, refreshSec: n
       return
     }
     let cancelled = false
+    let retry: ReturnType<typeof setTimeout> | undefined
     setState({ data: null, loading: true, error: null, updatedAt: null })
 
     const run = async () => {
@@ -29,7 +30,14 @@ export function usePolling<T>(key: string, load: () => Promise<T>, refreshSec: n
         const data = await loadRef.current()
         if (!cancelled) setState({ data, loading: false, error: null, updatedAt: Date.now() })
       } catch (e) {
-        if (!cancelled) setState((s) => ({ ...s, loading: false, error: (e as Error).message }))
+        if (cancelled) return
+        setState((s) => ({ ...s, loading: false, error: (e as Error).message }))
+        // Rate-limited: try again as soon as the limit lifts rather than at the next scheduled refresh.
+        const after = (e as { retryAfterSec?: number }).retryAfterSec
+        if (after) {
+          clearTimeout(retry)
+          retry = setTimeout(run, (after + 1) * 1000)
+        }
       }
     }
 
@@ -38,6 +46,7 @@ export function usePolling<T>(key: string, load: () => Promise<T>, refreshSec: n
     const interval = refreshSec > 0 ? setInterval(run, Math.max(minRefreshSec, refreshSec) * 1000) : undefined
     return () => {
       cancelled = true
+      clearTimeout(retry)
       clearTimeout(debounce)
       if (interval) clearInterval(interval)
     }

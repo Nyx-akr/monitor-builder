@@ -31,20 +31,63 @@ const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/
 const isTokenAddress = (q: string) => EVM_ADDRESS.test(q) || BASE58_ADDRESS.test(q)
 
 async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(API + path, { signal })
+  // Always ask DexScreener — its responses would otherwise be reused from the browser's HTTP cache,
+  // which hides how long a real answer takes and can show stale prices.
+  const res = await fetch(API + path, { signal, cache: 'no-store' })
   if (!res.ok) throw new Error(`DexScreener responded ${res.status}`)
   return res.json()
 }
 
 const byLiquidity = (a: DexPair, b: DexPair) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0)
 
-/** Pairs matching a symbol, name or address, most liquid first. `chain` narrows results ('' = any). */
+/**
+ * The real market for a token: most 24h volume first, liquidity as a tie-break. Liquidity alone is easy
+ * to fake — copycat pairs claim $290M liquidity with zero trades, while the real BONK pair trades 13k times a day.
+ */
+export const byActivity = (a: DexPair, b: DexPair) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0) || byLiquidity(a, b)
+
+/** Barely trading and barely any liquidity — too weak to accept on a loose (word / contains) match. */
+const isDead = (p: DexPair) => (p.volume?.h24 ?? 0) < 1000 && (p.liquidity?.usd ?? 0) < 10_000
+
+/** Pairs matching a symbol, name or address, best match then most traded first. `chain` narrows results ("" = any). */
+/**
+ * How well a pair matches what was typed, best first. DexScreener's search is fuzzy — it also matches
+ * addresses and metadata, so "asdd" returns tokens with no "asdd" in their symbol or name at all.
+ * Those get NO_MATCH and are dropped.
+ */
+const NO_MATCH = 99
+function matchTier(p: DexPair, query: string): number {
+  const q = query.trim().toLowerCase()
+  const sym = p.baseToken.symbol.toLowerCase()
+  const name = p.baseToken.name.toLowerCase()
+  if (p.baseToken.address.toLowerCase() === q || p.pairAddress.toLowerCase() === q) return 0
+  if (sym === q || sym === `$${q}`) return 1
+  if (name === q) return 2
+  if (sym.startsWith(q)) return 3
+  if (name.startsWith(q) || name.split(/[\s_-]+/).some((w) => w.startsWith(q))) return 4
+  if (sym.includes(q) || name.includes(q)) return 5
+  return NO_MATCH
+}
+
+/** Best match first, then most traded — and only pairs that really match the query. */
+function rank(pairs: DexPair[], query: string): DexPair[] {
+  return (
+    pairs
+      .map((p) => ({ p, tier: matchTier(p, query) }))
+      // Loose matches (word / contains) must at least be alive; exact and prefix matches are always kept.
+      .filter((x) => x.tier !== NO_MATCH && !(x.tier >= 4 && isDead(x.p)))
+      .sort((a, b) => a.tier - b.tier || byActivity(a.p, b.p))
+      .map((x) => x.p)
+  )
+}
+
+/** Pairs matching a symbol, name or address — best match, then most traded, first. `chain` narrows results ('' = any). */
 export async function searchPairs(query: string, chain: string, signal?: AbortSignal): Promise<DexPair[]> {
   const q = query.trim()
   if (!q) return []
   const data = await getJson<{ pairs: DexPair[] | null }>(`/latest/dex/search?q=${encodeURIComponent(q)}`, signal)
   const pairs = data.pairs ?? []
-  return (chain ? pairs.filter((p) => p.chainId === chain) : pairs).sort(byLiquidity)
+  return rank(chain ? pairs.filter((p) => p.chainId === chain) : pairs, q)
 }
 
 /** All pairs for up to 30 tokens on one chain, in a single request. */
@@ -66,7 +109,7 @@ export async function getPair(chain: string, pairAddress: string, signal?: Abort
 
 /**
  * Resolve the pair a block should show. A pair picked from search (`pairAddress`) wins;
- * otherwise the token address or free-text `query` resolves to its most liquid pair.
+ * otherwise the token address or free-text `query` resolves to its best-matching, most traded pair.
  * `chain` narrows results to one chain ('' = any).
  */
 export async function findPair(
@@ -96,11 +139,14 @@ export async function findPair(
     pairs = data.pairs ?? []
   }
 
-  let filtered = chain ? pairs.filter((p) => p.chainId === chain) : pairs
-  // For an address query, prefer pairs where it is the base token (e.g. SOL/USDC over BONK/SOL).
-  const asBase = filtered.filter((p) => p.baseToken.address.toLowerCase() === q.toLowerCase())
-  if (asBase.length) filtered = asBase
-  return filtered.sort(byLiquidity)[0] ?? null
+  const onChain = chain ? pairs.filter((p) => p.chainId === chain) : pairs
+  if (isTokenAddress(q)) {
+    // For an address, prefer pairs where it is the base token (e.g. SOL/USDC over BONK/SOL).
+    const asBase = onChain.filter((p) => p.baseToken.address.toLowerCase() === q.toLowerCase())
+    return (asBase.length ? asBase : onChain).sort(byActivity)[0] ?? null
+  }
+  // For text, only a real symbol/name match counts — otherwise it's "not found", not a random token.
+  return rank(onChain, q)[0] ?? null
 }
 
 export const CHAINS = [

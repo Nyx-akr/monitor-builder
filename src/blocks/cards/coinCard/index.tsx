@@ -1,7 +1,12 @@
-import type { BlockDefinition } from '../../types'
-import { getCoin, resolveCoin, type CoinDetail } from '../../../lib/coingecko'
+import { useEffect } from 'react'
+import type { BlockContext, BlockDefinition, Message } from '../../types'
+import { carryFetchedAt, fetchedAt, FRESH_ENOUGH_MS, getCoin, getGlobal, getMarkets, getTrending, resolveCoin, type CoinDetail } from '../../../lib/coingecko'
 import { usePolling } from '../../../lib/usePolling'
+import { track } from '../../../lib/fetchState'
+import { forgetSent } from '../../../lib/lastSent'
+import { FetchBadge } from '../../../builder/FetchBadge'
 import { compactNumber, money, moneyCompact, percent, shortDate } from '../../../lib/format'
+import { emitOnce, errorMessage, isBang, isTokenItem, type TokenItem } from '../../../lib/messages'
 import '../tokenCard/tokenCard.css'
 import './coinCard.css'
 
@@ -16,6 +21,10 @@ type Props = {
   showSupply: boolean
   showAbout: boolean
   showLinks: boolean
+  /** Which list a bang sends out of the `list` outlet. */
+  listSource: string
+  /** Send the coin's details out of `data` every time they load or refresh. */
+  outputOnUpdate: boolean
 }
 
 /** CoinGecko's keyless tier allows only a few requests a minute, so refreshes are capped. */
@@ -67,9 +76,130 @@ function Stat({ label, value }: { label: string; value: string }) {
   )
 }
 
+// ---------- messages this card sends ----------
+
+/** The selected coin's details, as sent out of the `data` outlet. */
+function coinItem(coin: CoinDetail, cur: string): TokenItem {
+  const m = coin.market_data as MarketData
+  return {
+    source: 'coingecko',
+    id: coin.id,
+    symbol: coin.symbol.toUpperCase(),
+    name: coin.name,
+    rank: coin.market_cap_rank,
+    currency: cur,
+    price: m.current_price?.[cur] ?? null,
+    change24h: m.price_change_percentage_24h_in_currency?.[cur] ?? m.price_change_percentage_24h ?? null,
+    change7d: m.price_change_percentage_7d_in_currency?.[cur] ?? m.price_change_percentage_7d ?? null,
+    change30d: m.price_change_percentage_30d_in_currency?.[cur] ?? m.price_change_percentage_30d ?? null,
+    change1y: m.price_change_percentage_1y_in_currency?.[cur] ?? m.price_change_percentage_1y ?? null,
+    marketCap: m.market_cap?.[cur] ?? null,
+    volume24h: m.total_volume?.[cur] ?? null,
+    ath: m.ath?.[cur] ?? null,
+    athChange: m.ath_change_percentage?.[cur] ?? null,
+    circulatingSupply: m.circulating_supply ?? null,
+    maxSupply: m.max_supply ?? null,
+    categories: coin.categories.filter(Boolean),
+    url: `https://www.coingecko.com/en/coins/${coin.id}`,
+  }
+}
+
+/** Every token in the chosen list, each as one list item (prices in USD). */
+async function loadList(source: string, maxAgeMs?: number): Promise<TokenItem[]> {
+  if (source === 'trending') {
+    const trending = await getTrending(maxAgeMs)
+    return carryFetchedAt(trending, trending.map((c) => ({
+      source: 'coingecko',
+      id: c.id,
+      symbol: c.symbol.toUpperCase(),
+      name: c.name,
+      rank: c.market_cap_rank,
+      price: c.data.price,
+      change24h: c.data.price_change_percentage_24h?.usd ?? null,
+      url: `https://www.coingecko.com/en/coins/${c.id}`,
+    })) as TokenItem[])
+  }
+  const markets = await getMarkets({ perPage: 250 }, maxAgeMs)
+  return carryFetchedAt(markets, markets.map((c) => ({
+    source: 'coingecko',
+    id: c.id,
+    symbol: c.symbol.toUpperCase(),
+    name: c.name,
+    rank: c.market_cap_rank,
+    price: c.current_price,
+    change24h: c.price_change_percentage_24h,
+    marketCap: c.market_cap,
+    volume24h: c.total_volume,
+    url: `https://www.coingecko.com/en/coins/${c.id}`,
+  })) as TokenItem[])
+}
+
+/**
+ * bang: send everything that doesn't need a selected coin — `info` (market-wide stats, coin count)
+ * and `list` (each token as an item) — plus `data` if a coin is selected. Right-to-left, like Max.
+ */
+async function bang(ctx: BlockContext<Props>) {
+  const { listSource, coinId, currency } = ctx.props
+  const [global, list, coin] = await Promise.allSettled([
+    // An input asked for data: ask CoinGecko again unless its answer is under a minute old (its free data
+    // doesn't change faster, and asking more gets the network rate-limited). The badge shows the real time.
+    track(ctx.id, getGlobal(FRESH_ENOUGH_MS), fetchedAt),
+    track(ctx.id, loadList(listSource || 'top', FRESH_ENOUGH_MS), fetchedAt),
+    coinId ? track(ctx.id, getCoin(coinId, FRESH_ENOUGH_MS), fetchedAt) : Promise.resolve(null),
+  ])
+  const failed = [global, list, coin].find((r): r is PromiseRejectedResult => r.status === 'rejected')
+
+  const info: Record<string, Message> = {
+    source: 'coingecko',
+    list: listSource === 'trending' ? 'trending' : 'top 250',
+    listCount: list.status === 'fulfilled' ? list.value.length : null,
+    selected: coinId || null,
+  }
+  if (global.status === 'fulfilled') {
+    const g = global.value
+    Object.assign(info, {
+      coinsTracked: g.active_cryptocurrencies,
+      markets: g.markets,
+      totalMarketCap: g.total_market_cap.usd,
+      totalVolume24h: g.total_volume.usd,
+      marketCapChange24h: g.market_cap_change_percentage_24h_usd,
+      btcDominance: g.market_cap_percentage.btc,
+      ethDominance: g.market_cap_percentage.eth,
+    })
+  }
+  if (failed) info.error = (failed.reason as Error).message
+
+  ctx.send('info', info)
+  if (list.status === 'fulfilled') ctx.send('list', list.value)
+  if (coin.status === 'fulfilled' && coin.value) emitOnce(ctx, 'data', coin.value.id, coinItem(coin.value, currency || 'usd'), true)
+  else if (coin.status === 'rejected') {
+    const why = (coin.reason as Error).message
+    emitOnce(ctx, 'error', why, errorMessage('coingecko', coinId, why), true)
+  }
+}
+
+/** A token arrived on the (hot) inlet: send the coin's details out of `data`, even if unchanged. */
+async function sendData(ctx: BlockContext<Props>) {
+  const { coinId, currency } = ctx.props
+  if (!coinId) return
+  try {
+    const coin = await track(ctx.id, getCoin(coinId, FRESH_ENOUGH_MS), fetchedAt)
+    // An input always gets an answer (force); only the card's own reload is de-duplicated against it.
+    emitOnce(ctx, 'data', coin.id, coinItem(coin, currency || 'usd'), true)
+  } catch (e) {
+    // Not found / rate-limited: the card goes blank and says why; the same goes out of `error`.
+    const why = describeFailure(e as Error, coinId)
+    emitOnce(ctx, 'error', why, errorMessage('coingecko', coinId, why))
+  }
+}
+
+/** CoinGecko answers 404 for an unknown coin id — say that plainly. */
+const describeFailure = (e: Error, coinId: string) =>
+  /responded 404/.test(e.message) ? `"${coinId}" isn't a coin on CoinGecko` : e.message
+
 const stripHtml = (html: string) => html.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
 
-function CoinCard({ props }: { props: Props }) {
+function CoinCard({ props, ctx }: { props: Props; ctx: BlockContext<Props> }) {
   const cur = props.currency || 'usd'
   const { data: coin, loading, error, updatedAt } = usePolling(
     props.coinId,
@@ -78,14 +208,26 @@ function CoinCard({ props }: { props: Props }) {
     MIN_REFRESH_SEC,
   )
 
-  // Same as the Token Card: with no data the full layout stays, with blank values.
+  // Live output: each load/refresh sends the coin's details out of `info`.
+  useEffect(() => {
+    if (coin && props.outputOnUpdate) emitOnce(ctx, 'data', coin.id, coinItem(coin, cur))
+    // A failed load (e.g. a token picked in Settings that isn't on CoinGecko) goes out of `error`.
+    if (!coin && error) {
+      const why = describeFailure(new Error(error), props.coinId)
+      emitOnce(ctx, 'error', why, errorMessage('coingecko', props.coinId, why))
+    }
+    // Only when new data arrives (or the currency changes), not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [updatedAt, cur, error])
+
+  // Same as the DexScreener card: with no data the full layout stays, with blank values.
   const m = coin?.market_data as MarketData | undefined
   const status = !props.coinId
     ? 'No coin selected — pick one in Settings'
     : loading && !coin
       ? 'Loading from CoinGecko…'
       : error && !coin
-        ? error
+        ? describeFailure(new Error(error), props.coinId)
         : null
 
   const change = (w: string): number | undefined =>
@@ -111,6 +253,7 @@ function CoinCard({ props }: { props: Props }) {
 
   return (
     <div className={`tc cc${coin ? '' : ' tc-empty'}`}>
+      <FetchBadge id={ctx.id} loading={loading} error={coin ? null : error} updatedAt={updatedAt} source="CoinGecko" />
       <div className="tc-head">
         {coin ? <img className="tc-logo" src={coin.image.large} alt="" /> : <div className="tc-logo tc-logo-fallback">?</div>}
         <div className="tc-title">
@@ -259,22 +402,78 @@ function CoinCard({ props }: { props: Props }) {
 
 export const coinCard: BlockDefinition<Props> = {
   type: 'coinCard',
-  label: 'Coin Card',
-  description: 'Market data & profile from CoinGecko',
+  label: 'CoinGecko',
+  description: 'Coin market data: rank, chart, ATH, supply',
   icon: '🦎',
   category: 'cards',
-  inlets: [{ id: 'token', label: 'token — CoinGecko id, symbol or name (e.g. btc)' }],
+  // Older flows had separate trigger / refresh inlets; a signal on `token` does the same now.
+  renamedInlets: { trigger: 'token', refresh: 'token' },
+  inlets: [
+    { id: 'token', label: 'token — CoinGecko id, symbol or name (e.g. btc) or a coin’s dict (e.g. a clicked list row) fetches it · a signal (blank token) clears the coin and fetches the list & info', types: ['string', 'dict', 'bang'] },
+  ],
+  outlets: [
+    { id: 'data', label: 'data — the selected coin’s details (price, rank, market cap…)', types: ['dict'] },
+    { id: 'list', label: 'list — each coin in the chosen list as an item', types: ['list'] },
+    { id: 'info', label: 'info — the market summary: counts and totals (no coin needed)', types: ['dict'] },
+    { id: 'error', label: 'error — the token and why the lookup failed (not on CoinGecko, rate limit…)', types: ['dict'], error: true },
+  ],
+  // Outlet descriptions follow the card's settings, so hovering shows exactly what comes out.
+  ports: (props) => ({
+    outlets: [
+      {
+        id: 'data',
+        label: `data — ${props.coinLabel ? `${props.coinLabel}’s details` : 'the selected coin’s details (no coin selected yet)'}: price, rank, market cap, 24h / 7d / 30d / 1y change, ATH, supply`,
+        types: ['dict'],
+      },
+      {
+        id: 'list',
+        label: `list — ${props.listSource === 'trending' ? 'Trending: the 15 most-searched coins on CoinGecko' : 'Top 250 coins by market cap'}, each with price, 24h change, market cap and volume`,
+        types: ['list'],
+      },
+      { id: 'info', label: 'info — market summary: coins tracked, markets, total market cap and volume, BTC / ETH dominance', types: ['dict'] },
+      { id: 'error', label: 'error — the token and why the lookup failed (not on CoinGecko, rate limit…)', types: ['dict'], error: true },
+    ],
+  }),
   receive: async (ctx, inlet, msg) => {
-    const token = String(msg).trim()
-    if (inlet !== 'token' || !token || token === 'bang') return
+    if (inlet !== 'token') return
+    // A plain signal (e.g. from a Timer, or an empty message box) is a blank token: clear the selected
+    // coin, then fetch what needs no token (list & info). Right-click → Fetch now refreshes without clearing.
+    if (isBang(msg) || (typeof msg === 'string' && !msg.trim())) {
+      ctx.update({ coinId: '', coinLabel: '' })
+      forgetSent(ctx.id, 'data')
+      return bang(ctx)
+    }
+    // A token item from a list (e.g. another card's `list` outlet).
+    if (isTokenItem(msg)) {
+      if (msg.source === 'coingecko' && msg.id) {
+        ctx.update({ coinId: msg.id, coinLabel: `${msg.name} (${msg.symbol.toUpperCase()})` })
+        return sendData(ctx)
+      }
+      msg = msg.symbol
+    }
+    const token = typeof msg === 'string' || typeof msg === 'number' ? String(msg).trim() : ''
+    if (!token) return
     try {
       const coin = await resolveCoin(token)
-      if (coin) return ctx.update({ coinId: coin.id, coinLabel: `${coin.name} (${coin.symbol.toUpperCase()})` })
+      if (coin) {
+        ctx.update({ coinId: coin.id, coinLabel: `${coin.name} (${coin.symbol.toUpperCase()})` })
+        return sendData(ctx)
+      }
     } catch {
       /* rate-limited: fall back to treating the token as a CoinGecko id */
     }
     ctx.update({ coinId: token.toLowerCase(), coinLabel: token })
   },
+  menu: [
+    { label: 'Fetch now', run: (ctx) => bang(ctx) },
+    {
+      label: 'Clear token',
+      run: (ctx) => {
+        ctx.update({ coinId: '', coinLabel: '' })
+        forgetSent(ctx.id, 'data')
+      },
+    },
+  ],
   defaultProps: {
     coinId: 'bitcoin',
     coinLabel: 'Bitcoin (BTC)',
@@ -286,6 +485,8 @@ export const coinCard: BlockDefinition<Props> = {
     showSupply: true,
     showAbout: false,
     showLinks: true,
+    listSource: 'top',
+    outputOnUpdate: true,
   },
   width: 560,
   settings: [
@@ -310,6 +511,17 @@ export const coinCard: BlockDefinition<Props> = {
     { key: 'showSupply', label: 'Show supply', type: 'toggle' },
     { key: 'showAbout', label: 'Show description', type: 'toggle' },
     { key: 'showLinks', label: 'Show links', type: 'toggle' },
+    {
+      key: 'listSource',
+      label: 'List to fetch',
+      type: 'select',
+      options: [
+        { value: 'top', label: 'Top 250 by market cap' },
+        { value: 'trending', label: 'Trending (15)' },
+      ],
+      help: 'Fetched and sent out of list when a signal arrives (or right-click → Fetch now)',
+    },
+    { key: 'outputOnUpdate', label: 'Send data out on every update', type: 'toggle' },
   ],
   Render: CoinCard,
 }

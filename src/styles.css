@@ -407,30 +407,28 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .tb-vrow .ts-row { height: 100%; }
 .tb-retry { margin-top: 8px; font-size: 12px; }
 
-/* ---------- ports & wires (Max/MSP-style data flow) ---------- */
+/* ---------- ports & wires (Max/MSP-style data flow, coloured by data type) ---------- */
 .block-frame.selected, .block-frame.dragging { z-index: 2; }
-.wire-line { filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6)); }
 
 .port {
   position: absolute;
   z-index: 3;
-  background: var(--muted);
   border-radius: 2px;
-  opacity: 0.85;
-  transition: background 0.1s, transform 0.1s;
+  opacity: 0.55; /* background/colour = the port's data type, set inline */
+  transition: opacity 0.1s, transform 0.1s, box-shadow 0.1s;
 }
 .port.inlet { top: -4px; }
 .port.outlet { bottom: -4px; }
-.port.connected { background: var(--accent); opacity: 1; }
+.port.connected { opacity: 1; }
 .block-frame.editable .port { cursor: crosshair; }
-.block-frame.editable .port:hover { background: #fff; transform: scaleY(1.4); }
-.canvas.preview .port { opacity: 0.4; }
-/* While wiring, highlight only ports that can take the wire. */
-.canvas.wiring.from-outlet .port.inlet,
-.canvas.wiring.from-inlet .port.outlet { background: var(--up); opacity: 1; }
-.canvas.wiring.from-outlet .port.inlet:hover,
-.canvas.wiring.from-inlet .port.outlet:hover { transform: scale(1.6); }
-.canvas.wiring, .canvas.wiring * { cursor: crosshair !important; }
+.block-frame.editable .port:hover { opacity: 1; transform: scaleY(1.5); }
+.canvas.preview .port { opacity: 0.35; }
+
+/* While dragging a wire: ports that can take it glow, the rest fade and refuse it. */
+.port.can-connect { opacity: 1; transform: scale(1.35); box-shadow: 0 0 8px currentColor; }
+.port.can-connect:hover { transform: scale(1.8); }
+.port.dim { opacity: 0.1; cursor: not-allowed !important; }
+.canvas.wiring, .canvas.wiring * { cursor: crosshair; }
 
 .wires {
   /* Above blocks like Max patch cords; ports (z 3) stay above wires so they remain grabbable. */
@@ -443,18 +441,22 @@ button { font: inherit; color: inherit; cursor: pointer; }
   overflow: visible;
   pointer-events: none;
 }
-.wire { pointer-events: stroke; cursor: pointer; }
+.wire { pointer-events: stroke; cursor: pointer; --wire: var(--muted); }
 .wire-hit { fill: none; stroke: transparent; stroke-width: 12; }
 .wire-line {
   fill: none;
-  stroke: var(--muted);
+  stroke: var(--wire);
   stroke-width: 2;
-  transition: stroke 0.15s;
+  opacity: 0.8;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6));
+  transition: opacity 0.15s, stroke-width 0.15s;
 }
-.wire:hover .wire-line { stroke: var(--text); }
-.wire.selected .wire-line { stroke: var(--accent); stroke-width: 3; }
-.wire.active .wire-line { stroke: var(--up); stroke-width: 3; transition: none; }
-.wire-line.draft { stroke: var(--up); stroke-dasharray: 6 4; }
+.wire:hover .wire-line { opacity: 1; }
+.wire.selected .wire-line { stroke: #fff; stroke-width: 3; opacity: 1; }
+.wire.active .wire-line { stroke-width: 3.5; opacity: 1; filter: drop-shadow(0 0 5px var(--wire)); transition: none; }
+/* Types no longer fit (e.g. a message box's content changed): drawn dashed; messages won't pass. */
+.wire.mismatch .wire-line { stroke-dasharray: 5 5; opacity: 0.6; }
+.wire-line.draft { stroke-dasharray: 6 4; opacity: 1; }
 .canvas.preview .wire { pointer-events: none; }
 
 /* ---------- flow selector ---------- */
@@ -483,6 +485,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .flow-status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .flow-status.saved .dot { background: var(--up); }
 .flow-status.unsaved .dot, .flow-status.saving .dot { background: #eab308; }
+.flow-status.offline, .flow-status.conflict { color: #eab308; }
+.flow-status.offline .dot { background: #eab308; animation: pulse 1.2s infinite; }
+.flow-status.conflict .dot { background: #f97316; }
 .flow-status.error { color: var(--down); }
 .flow-status.error .dot { background: var(--down); }
 
@@ -522,3 +527,97 @@ button { font: inherit; color: inherit; cursor: pointer; }
   font-size: 12px;
   color: var(--accent);
 }
+
+/* Palette drag ghost: follows the cursor and never takes the pointer, so the release lands on the canvas. */
+.drag-ghost {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+/* ---------- right-click menu ---------- */
+.ctx-menu {
+  position: absolute;
+  z-index: 50;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.ctx-menu button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  text-align: left;
+}
+.ctx-menu button:hover { background: var(--raised); }
+.ctx-menu button.danger { color: var(--down); }
+.ctx-menu kbd { font: inherit; font-size: 11px; color: var(--muted); }
+.ctx-sep { height: 1px; margin: 4px 2px; background: var(--line); }
+.toolbar-actions { display: none; }
+
+
+/* Instant port tooltip (screen space, so it stays readable at any zoom). */
+.port-tip {
+  position: absolute;
+  z-index: 40;
+  max-width: 280px;
+  padding: 6px 9px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 8px));
+}
+.port-tip.below { transform: translate(-50%, 8px); }
+.port-tip strong { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.port-tip div { color: var(--muted); margin-top: 2px; }
+.port-tip .port-tip-label { color: var(--text); margin-top: 0; }
+.port-tip.error .port-tip-label { color: #f97316; }
+.port-tip-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.port-tip.error { border-color: #f97316; }
+.port-tip.error strong { color: #f97316; }
+
+.port-tip-types { margin-top: 4px; font-size: 11px; }
+.port-tip-types b { color: var(--text); font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.type-chips { margin-left: auto; display: flex; gap: 4px; }
+.type-chip {
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  opacity: 0.9;
+}
+
+.port-tip-last {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.port-tip-last-head { font-family: inherit; text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
+.port-tip-last-main { color: var(--text); }
