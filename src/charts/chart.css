@@ -1,0 +1,25 @@
+.chart-box { box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; font-size: 12px; }
+.chart-box.small { width: 380px; height: 240px; }
+.chart-box.big { height: 100%; font-size: 14px; padding: 12px 16px; }
+.chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.chart-title { font-weight: 600; }
+.chart-tf { color: var(--muted); font-size: 11px; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.chart-key { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.chart-key i { width: 10px; height: 10px; border-radius: 3px; align-self: center; flex: none; }
+.chart-key b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart-key .up { color: var(--up); }
+.chart-key .down { color: var(--down); }
+.chart-key .dim { color: var(--muted); }
+.chart-plot { position: relative; flex: 1; min-height: 60px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.chart-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.chart-plot .grid { stroke: var(--line); stroke-dasharray: 3 4; vector-effect: non-scaling-stroke; }
+.chart-plot polyline { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.chart-y { position: absolute; left: 4px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; background: color-mix(in srgb, var(--card) 80%, transparent); padding: 0 2px; }
+.chart-y.top { top: 0; }
+.chart-y.bottom { bottom: 2px; }
+.chart-x { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; }
+.chart-empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 8px; }
+.chart-plot .area { stroke: none; }
+.chart-plot .wick { stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.chart-plot .body { stroke-width: 1.5; vector-effect: non-scaling-stroke; }

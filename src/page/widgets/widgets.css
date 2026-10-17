@@ -1,0 +1,26 @@
+/* Page widgets: how a docked block looks inside a Page box. */
+.pw { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.pw-cap { display: flex; justify-content: space-between; gap: 8px; padding: 10px 14px 0; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+.pw-main { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 6px 14px 12px; }
+.pw-number { font-size: 46px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pw-text { font-size: 26px; font-weight: 600; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; word-break: break-word; }
+.pw-empty { color: var(--muted); font-size: 14px; text-align: center; }
+.pw-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 8px 10px; }
+.pw-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.pw-table th { position: sticky; top: 0; background: var(--card); color: var(--muted); font-weight: 500; font-size: 12px; text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.pw-table td { padding: 6px 8px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.pw-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.pw-table .sym { font-weight: 600; }
+.pw-table .dim { color: var(--muted); }
+.pw .up { color: var(--up); }
+.pw .down { color: var(--down); }
+.pw-kv { display: flex; justify-content: space-between; gap: 16px; padding: 7px 8px; font-size: 14px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+.pw-kv span { color: var(--muted); }
+.pw-kv strong { font-weight: 600; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pw-token { display: flex; align-items: baseline; gap: 10px; }
+.pw-token-sym { font-size: 30px; font-weight: 700; }
+.pw-token-name { color: var(--muted); font-size: 15px; }
+.pw-token-price { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 4px; }
+.pw-token-chg { font-size: 16px; font-weight: 600; margin-left: 10px; }
+.pw-token-stats { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.pw-token-stats b { color: var(--text); font-weight: 600; }

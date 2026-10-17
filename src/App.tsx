@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { blockByType } from './blocks/registry'
-import { Palette, PaletteCard, type PaletteDrag } from './builder/Palette'
-import { Canvas } from './builder/Canvas'
-import { Inspector } from './builder/Inspector'
-import { FlowSelector } from './builder/FlowSelector'
-import { useFlow } from './builder/useFlow'
+import { Palette, PaletteCard, type PaletteDrag } from './components/Palette'
+import { Canvas } from './components/Canvas'
+import { Inspector } from './components/Inspector'
+import { FlowSelector } from './components/FlowSelector'
+import { useFlow } from './hooks/useFlow'
 import type { BlockProps } from './blocks/types'
-import { useRuntime } from './builder/useRuntime'
+import { useRuntime } from './hooks/useRuntime'
 
 export default function App() {
   const flow = useFlow()
@@ -40,8 +40,9 @@ export default function App() {
     flow.add(type, center.x - (blockByType[type].width ?? 120) / 2 + cascade, center.y + cascade, props)
   }
 
-  // Delete / Backspace removes the selected block or wire, Escape deselects, ⌘S saves now.
-  const { selectedId, selectedWireId, remove, disconnect, setSelectedId, selectWire, saveNow } = flow
+  // Delete / Backspace removes the selected block or wire, Escape deselects, ⌘S saves now,
+  // ⌘Z / Ctrl+Z undoes, ⇧⌘Z / Ctrl+Shift+Z (or Ctrl+Y) redoes.
+  const { selectedId, selectedWireId, remove, disconnect, setSelectedId, selectWire, saveNow, undo, redo } = flow
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
@@ -50,6 +51,14 @@ export default function App() {
         return
       }
       if (!editing || document.activeElement?.matches('input, textarea, select')) return
+      // (In a text field the keys above are left to the field's own undo.)
+      const key = e.key.toLowerCase()
+      if ((e.metaKey || e.ctrlKey) && (key === 'z' || key === 'y')) {
+        e.preventDefault()
+        if (key === 'y' || e.shiftKey) redo()
+        else undo()
+        return
+      }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedWireId) disconnect(selectedWireId)
         else if (selectedId) remove(selectedId)
@@ -61,7 +70,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [editing, selectedId, selectedWireId, remove, disconnect, setSelectedId, selectWire, saveNow])
+  }, [editing, selectedId, selectedWireId, remove, disconnect, setSelectedId, selectWire, saveNow, undo, redo])
 
   const selected = flow.blocks.find((b) => b.id === flow.selectedId)
 
@@ -73,7 +82,7 @@ export default function App() {
         </div>
         <div className="topbar-actions">
           {editing && flow.blocks.length > 0 && (
-            <button className="ghost-btn" onClick={() => confirm('Remove all blocks and wires from this flow?') && flow.clear()}>
+            <button className="ghost-btn" onClick={() => confirm('Remove all blocks and wires from this flow? (The Page stays.)') && flow.clear()}>
               Clear
             </button>
           )}
@@ -121,15 +130,23 @@ export default function App() {
             onMove={flow.moveTo}
             onDuplicate={flow.duplicate}
             onRemove={flow.remove}
-            onConnect={flow.connect}
+            onConnect={(from, to) => {
+              if (!flow.connect(from, to)) return
+              // Let the source react to its new wire (e.g. a Storage sends its history) once the wire is in place.
+              const source = flow.blocks.find((b) => b.id === from.block)
+              const onWired = source && blockByType[source.type].onWired
+              if (onWired) setTimeout(() => onWired(runtime.makeCtx(from.block), from.port), 50)
+            }}
             onDisconnect={flow.disconnect}
+            onDock={flow.dock}
+            onUndock={flow.undock}
           />
           {editing && (
             <Inspector
               block={selected}
               blocks={flow.blocks}
               wires={flow.wires}
-              onChange={(p) => selected && flow.update(selected.id, p)}
+              onChange={(p) => selected && flow.edit(selected.id, p)}
               onDisconnect={flow.disconnect}
             />
           )}

@@ -21,7 +21,7 @@ export interface Port {
    * Data types this inlet accepts / this outlet sends (see lib/dataTypes). Only compatible ports can be
    * wired, and an inlet ignores messages of other types. Omitted = 'any'.
    */
-  types?: ('bang' | 'string' | 'number' | 'list' | 'dict' | 'any')[]
+  types?: ('bang' | 'string' | 'number' | 'table' | 'any')[]
   /** An error outlet: drawn orange, carries what went wrong. */
   error?: boolean
 }
@@ -47,7 +47,21 @@ export interface BlockDefinition<P extends BlockProps = BlockProps> {
   description: string
   icon: string
   /** Palette group — mirrors the folder the block lives in (src/blocks/<category>/<name>). */
-  category: 'cards' | 'objects'
+  category: 'apis' | 'objects' | 'pages'
+  /**
+   * Always in every flow, exactly once (added when a flow opens), and can only be moved — no delete,
+   * duplicate or palette item. E.g. the Page: the screen this flow's logic drives.
+   */
+  permanent?: boolean
+  /** Always docked in this Page box (e.g. the token selector) — it can't be dragged out. */
+  dockedIn?: string
+  /**
+   * How the block looks when dropped into a Page box (a nicer, read-only-ish widget instead of the patch box).
+   * Blocks with a Widget can be docked; it gets the same props and ctx as Render.
+   */
+  Widget?: ComponentType<{ props: P; ctx: BlockContext<P> }>
+  /** Ports that moved to another (permanent) block, port id → that block's type (its id). Saved wires follow. */
+  movedPorts?: Record<string, string>
   defaultProps: P
   /** Width of the block on the canvas, in px. Omit to size to content. */
   width?: number
@@ -82,6 +96,8 @@ export interface BlockDefinition<P extends BlockProps = BlockProps> {
    * Returns props to set (null = nothing). If it fails the block is placed anyway.
    */
   prepare?: (props: P, reason: 'add' | 'duplicate') => Promise<Partial<P> | null>
+  /** A wire was just connected from one of this block's outlets — e.g. a Storage sends its history to the new wire. */
+  onWired?: (ctx: BlockContext<P>, outlet: string) => void
   /** Extra right-click menu items for this block (Duplicate / Delete are always there). */
   menu?: { label: string; run: (ctx: BlockContext<P>) => void }[]
   /** Called when a message arrives on one of this block's inlets. */
@@ -96,6 +112,8 @@ export interface BlockInstance {
   /** Position on the canvas, in world (unzoomed) px. */
   x: number
   y: number
+  /** Docked in a Page box: drawn there as a widget (its x / y are then the box's). */
+  dock?: { slot: string }
 }
 
 export interface PortRef {

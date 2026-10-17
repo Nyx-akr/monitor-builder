@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { flowFiles } from './vite-plugin-flows'
-import { storageFiles } from './vite-plugin-storage'
+import { flowFiles } from './server/flows'
+import { storageFiles } from './server/storage'
 
 export default defineConfig({
   plugins: [react(), flowFiles('flows'), storageFiles('flows/storage')],
