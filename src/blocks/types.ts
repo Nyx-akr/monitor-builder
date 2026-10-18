@@ -21,7 +21,7 @@ export interface Port {
    * Data types this inlet accepts / this outlet sends (see lib/dataTypes). Only compatible ports can be
    * wired, and an inlet ignores messages of other types. Omitted = 'any'.
    */
-  types?: ('bang' | 'string' | 'number' | 'table' | 'any')[]
+  types?: ('bang' | 'string' | 'number' | 'table' | 'token' | 'history' | 'ohlcv' | 'any')[]
   /** An error outlet: drawn orange, carries what went wrong. */
   error?: boolean
 }
@@ -96,6 +96,8 @@ export interface BlockDefinition<P extends BlockProps = BlockProps> {
    * Returns props to set (null = nothing). If it fails the block is placed anyway.
    */
   prepare?: (props: P, reason: 'add' | 'duplicate') => Promise<Partial<P> | null>
+  /** A wire was just connected into this block: hand it what the source last sent (e.g. a Chart gets the candles at once). */
+  replayOnConnect?: boolean
   /** A wire was just connected from one of this block's outlets — e.g. a Storage sends its history to the new wire. */
   onWired?: (ctx: BlockContext<P>, outlet: string) => void
   /** Extra right-click menu items for this block (Duplicate / Delete are always there). */

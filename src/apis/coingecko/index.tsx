@@ -1,12 +1,13 @@
 import { useEffect } from 'react'
 import type { BlockContext, BlockDefinition, Message } from '../../blocks/types'
-import { carryFetchedAt, fetchedAt, FRESH_ENOUGH_MS, getCoin, getGlobal, getMarkets, getTrending, resolveCoin, type CoinDetail } from '../../services/coingecko'
+import { carryFetchedAt, fetchedAt, FRESH_ENOUGH_MS, getCoin, getGlobal, getMarkets, getTrending, resolveCoin, type CoinDetail, DEX_TO_GECKO_PLATFORM, getCoinByContract, getOhlc } from '../../services/coingecko'
 import { usePolling } from '../../hooks/usePolling'
 import { track } from '../../core/fetchState'
 import { forgetSent } from '../../core/lastSent'
+import { coinContract } from '../../services/chains'
 import { FetchBadge } from '../../components/FetchBadge'
 import { compactNumber, money, moneyCompact, percent, shortDate } from '../../lib/format'
-import { emitOnce, errorMessage, isBang, isTokenItem, listItem, type TokenItem } from '../../core/messages'
+import { emitOnce, errorMessage, isBang, isToken, isTokenItem, listItem, type TokenItem } from '../../core/messages'
 import '../dexscreener/tokenCard.css'
 import './coinCard.css'
 
@@ -25,6 +26,8 @@ type Props = {
   listSource: string
   /** Send the coin's details out of `data` every time they load or refresh. */
   outputOnUpdate: boolean
+  /** How many days of OHLC candles `ohlc` sends (CoinGecko: 1 → 30-minute candles, 7–30 → 4-hour, 90 → daily). */
+  ohlcDays: number
 }
 
 /** CoinGecko's keyless tier allows only a few requests a minute, so refreshes are capped. */
@@ -81,9 +84,15 @@ function Stat({ label, value }: { label: string; value: string }) {
 /** The selected coin's details, as sent out of the `data` outlet. */
 function coinItem(coin: CoinDetail, cur: string): TokenItem {
   const m = coin.market_data as MarketData
+  // Its contract on a chain the other cards know, so DEX / safety cards can look it up (BTC has none).
+  const onChain = coinContract(coin.platforms)
   return {
+    kind: 'token',
     source: 'coingecko',
     id: coin.id,
+    chain: onChain?.chain ?? null,
+    address: onChain?.address ?? null,
+    logo: coin.image?.small ?? null,
     symbol: coin.symbol.toUpperCase(),
     name: coin.name,
     rank: coin.market_cap_rank,
@@ -180,8 +189,10 @@ async function bang(ctx: BlockContext<Props>) {
 
   ctx.send('info', info)
   if (list.status === 'fulfilled') ctx.send('list', list.value)
-  if (coin.status === 'fulfilled' && coin.value) emitOnce(ctx, 'data', coin.value.id, coinItem(coin.value, currency || 'usd'), true)
-  else if (coin.status === 'rejected') {
+  if (coin.status === 'fulfilled' && coin.value) {
+    emitOnce(ctx, 'data', coin.value.id, coinItem(coin.value, currency || 'usd'), true)
+    void sendOhlc(ctx)
+  } else if (coin.status === 'rejected') {
     const why = (coin.reason as Error).message
     emitOnce(ctx, 'error', why, errorMessage('coingecko', coinId, why), true)
   }
@@ -195,10 +206,27 @@ async function sendData(ctx: BlockContext<Props>) {
     const coin = await track(ctx.id, getCoin(coinId, FRESH_ENOUGH_MS), fetchedAt)
     // An input always gets an answer (force); only the card's own reload is de-duplicated against it.
     emitOnce(ctx, 'data', coin.id, coinItem(coin, currency || 'usd'), true)
+    void sendOhlc(ctx)
   } catch (e) {
     // Not found / rate-limited: the card goes blank and says why; the same goes out of `error`.
     const why = describeFailure(e as Error, coinId)
     emitOnce(ctx, 'error', why, errorMessage('coingecko', coinId, why))
+  }
+}
+
+/** The selected coin's OHLC candles out of `ohlc`, as OHLCV rows a Chart draws (CoinGecko gives no volume). */
+async function sendOhlc(ctx: BlockContext<Props>) {
+  const { coinId } = ctx.props
+  if (!coinId) return
+  const days = ([1, 7, 14, 30, 90] as const).find((d) => d === Number(ctx.props.ohlcDays)) ?? 1
+  try {
+    const candles = await track(ctx.id, getOhlc(coinId, days))
+    ctx.send(
+      'ohlc',
+      candles.map(([t, open, high, low, close]) => ({ at: new Date(t).toISOString(), type: 'table', data: { price: close, open, high, low, close } })),
+    )
+  } catch (e) {
+    emitOnce(ctx, 'error', (e as Error).message, errorMessage('coingecko', coinId, (e as Error).message))
   }
 }
 
@@ -416,12 +444,15 @@ export const coinCard: BlockDefinition<Props> = {
   icon: '🦎',
   category: 'apis',
   // Older flows had separate trigger / refresh inlets; a signal on `token` does the same now.
-  renamedInlets: { trigger: 'token', refresh: 'token' },
+  // Very old flows had a separate trigger inlet; signals now go to refresh.
+  renamedInlets: { trigger: 'refresh' },
   inlets: [
-    { id: 'token', label: 'token — CoinGecko id, symbol or name (e.g. btc) or a coin’s dict (e.g. a clicked list row) fetches it · a signal (blank token) clears the coin and fetches the list & info', types: ['string', 'table', 'bang'] },
+    { id: 'token', label: 'token — a Token (from a Token block, the Page’s token selector, a card’s data): fetches that coin (by its CoinGecko id, or its contract)', types: ['token'] },
+    { id: 'refresh', label: 'refresh — a signal (e.g. a Timer) fetches the list, the summary and the selected coin again', types: ['bang'] },
   ],
   outlets: [
-    { id: 'data', label: 'data — the selected coin’s details (price, rank, market cap…)', types: ['table'] },
+    { id: 'data', label: 'data — the selected coin’s details, as a Token (price, rank, market cap…)', types: ['token'] },
+    { id: 'ohlc', label: 'ohlc — the selected coin’s candles as OHLCV (open / high / low / close) — wire into a Chart', types: ['ohlcv'] },
     { id: 'list', label: 'list — each coin in the chosen list as an item', types: ['table'] },
     { id: 'info', label: 'info — the market summary: counts and totals (no coin needed)', types: ['table'] },
     { id: 'error', label: 'error — the token and why the lookup failed (not on CoinGecko, rate limit…)', types: ['table'], error: true },
@@ -431,8 +462,13 @@ export const coinCard: BlockDefinition<Props> = {
     outlets: [
       {
         id: 'data',
-        label: `data — ${props.coinLabel ? `${props.coinLabel}’s details` : 'the selected coin’s details (no coin selected yet)'}: price, rank, market cap, 24h / 7d / 30d / 1y change, ATH, supply`,
-        types: ['table'],
+        label: `data — ${props.coinLabel ? `${props.coinLabel}’s details` : 'the selected coin’s details (no coin selected yet)'}, as a Token: price, rank, market cap, 24h / 7d / 30d / 1y change, ATH, supply`,
+        types: ['token'],
+      },
+      {
+        id: 'ohlc',
+        label: `ohlc — ${props.coinLabel || 'the selected coin'}’s candles as OHLCV over ${Number(props.ohlcDays) || 1} day(s) — wire into a Chart`,
+        types: ['ohlcv'],
       },
       {
         id: 'list',
@@ -444,6 +480,7 @@ export const coinCard: BlockDefinition<Props> = {
     ],
   }),
   receive: async (ctx, inlet, msg) => {
+    if (inlet === 'refresh') return bang(ctx)
     if (inlet !== 'token') return
     // A plain signal (e.g. from a Timer, or an empty message box) is a blank token: clear the selected
     // coin, then fetch what needs no token (list & info). Right-click → Fetch now refreshes without clearing.
@@ -454,13 +491,25 @@ export const coinCard: BlockDefinition<Props> = {
     }
     // A table of many rows: its first row.
     if (Array.isArray(msg)) msg = msg[0] ?? ''
-    // A token item from a list (e.g. another card's `list` outlet).
-    if (isTokenItem(msg)) {
-      if (msg.source === 'coingecko' && msg.id) {
-        ctx.update({ coinId: msg.id, coinLabel: `${msg.name} (${msg.symbol.toUpperCase()})` })
+    // A Token (from a Token block, a list row, another card's data).
+    if (isToken(msg) || isTokenItem(msg)) {
+      const t = msg as TokenItem
+      if (t.source === 'coingecko' && t.id) {
+        ctx.update({ coinId: t.id, coinLabel: `${t.name} (${t.symbol.toUpperCase()})` })
         return sendData(ctx)
       }
-      msg = msg.symbol
+      // A DEX token: find the coin by its contract — exact, unlike its symbol.
+      const platform = t.chain ? DEX_TO_GECKO_PLATFORM[t.chain] : undefined
+      if (platform && t.address) {
+        try {
+          const coin = await getCoinByContract(platform, t.address)
+          ctx.update({ coinId: coin.id, coinLabel: `${coin.name} (${coin.symbol.toUpperCase()})` })
+          return sendData(ctx)
+        } catch {
+          /* not on CoinGecko by contract: try its symbol */
+        }
+      }
+      msg = t.symbol
     }
     const token = typeof msg === 'string' || typeof msg === 'number' ? String(msg).trim() : ''
     if (!token) return
@@ -498,6 +547,7 @@ export const coinCard: BlockDefinition<Props> = {
     showLinks: true,
     listSource: 'top',
     outputOnUpdate: true,
+    ohlcDays: 1,
   },
   width: 560,
   settings: [
@@ -533,6 +583,19 @@ export const coinCard: BlockDefinition<Props> = {
       help: 'Fetched and sent out of list when a signal arrives (or right-click → Fetch now)',
     },
     { key: 'outputOnUpdate', label: 'Send data out on every update', type: 'toggle' },
+    {
+      key: 'ohlcDays',
+      label: 'OHLC range',
+      type: 'select',
+      options: [
+        { value: '1', label: '1 day (30-minute candles)' },
+        { value: '7', label: '7 days (4-hour candles)' },
+        { value: '14', label: '14 days (4-hour candles)' },
+        { value: '30', label: '30 days (4-hour candles)' },
+        { value: '90', label: '90 days (daily candles)' },
+      ],
+      help: 'How far back the ohlc output goes. Sent whenever the coin’s data is (a token or refresh arriving).',
+    },
   ],
   Render: CoinCard,
 }

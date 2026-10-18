@@ -23,3 +23,6 @@
 .chart-plot .area { stroke: none; }
 .chart-plot .wick { stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .chart-plot .body { stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.chart-tf { display: inline-flex; align-items: center; gap: 4px; }
+.chart-tf-select { background: var(--raised); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; font: inherit; font-size: 11px; cursor: pointer; }
+.chart-box.big .chart-tf-select { font-size: 13px; padding: 4px 8px; }

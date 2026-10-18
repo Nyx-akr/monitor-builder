@@ -13,5 +13,6 @@ import { list } from './list'
 import { message } from './message'
 import { slice } from './slice'
 import { storage } from './storage'
+import { token } from './token'
 
-export const objectBlocks = [chart, clock, condition, dict, gate, get, join, list, message, slice, storage]
+export const objectBlocks = [chart, clock, condition, dict, gate, get, join, list, message, slice, storage, token]

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { percent } from '../lib/format'
 import { candlePeriod, toCandles } from './data'
-import { LINE_COLORS, formatTime, formatValue, timeframeOf } from './options'
+import { LINE_COLORS, TIMEFRAMES, formatTime, formatValue, timeframeOf } from './options'
 import type { Candle, ChartStyle, DrawnLine, Point } from './types'
 import './chart.css'
 
@@ -23,6 +23,8 @@ export interface ChartViewProps {
   big?: boolean
   /** Shown when there's nothing to draw yet. */
   emptyText: string
+  /** Given: the timeframe is a dropdown at the top right, so it can be changed right on the chart. */
+  onTimeframe?: (value: string) => void
 }
 
 // The plot is drawn in a 1000 × 400 box and stretched to fit; labels are HTML so they don't stretch.
@@ -39,7 +41,7 @@ function useNow(everyMs = 5000) {
   return now
 }
 
-export function ChartView({ lines, style, timeframe, asPercent, candleSize, big, emptyText }: ChartViewProps) {
+export function ChartView({ lines, style, timeframe, asPercent, candleSize, big, emptyText, onTimeframe }: ChartViewProps) {
   const now = useNow()
   const tf = timeframeOf(timeframe)
   const from = now - tf.ms
@@ -85,7 +87,17 @@ export function ChartView({ lines, style, timeframe, asPercent, candleSize, big,
       <div className="chart-head">
         <span className="chart-title">Chart</span>
         <span className="chart-tf">
-          {tf.label}
+          {onTimeframe ? (
+            <select className="chart-tf-select" value={tf.value} onChange={(e) => onTimeframe(e.target.value)} title="How far back to show">
+              {TIMEFRAMES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            tf.label
+          )}
           {asPercent ? ' · % change' : ''}
           {style === 'candle' && all.length > 0 ? ` · ${Math.round(period / 60e3) >= 60 ? `${Math.round(period / 3600e3)}h` : `${Math.round(period / 60e3)}m`} candles` : ''}
         </span>

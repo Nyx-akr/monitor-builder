@@ -1,5 +1,5 @@
 import type { Message, Port } from '../blocks/types'
-import { isObject } from './messages'
+import { isHistory, isObject, isOhlcv, isToken } from './messages'
 
 /**
  * What travels on a wire. Every port declares the types it takes (inlet) or sends (outlet), and only
@@ -9,13 +9,23 @@ import { isObject } from './messages'
  * 'table': structured data — rows of named values. One row is a dict (a token's details, a market summary,
  * an error, a Dict box); many rows are a list (Top 250, Trending, a Storage's history). Blocks take both.
  */
-export type DataType = 'bang' | 'string' | 'number' | 'table' | 'any'
+/**
+ * 'token': which token — always its chain and contract address, plus symbol, name, pool, logo (and a market
+ * snapshot when a card sent it). Every block that works on a token takes one.
+ * 'ohlcv': candles over time — dated rows with open / high / low / close / volume (GeckoTerminal, CoinGecko OHLC).
+ * 'history': values over time — dated rows ({ at, data }), oldest first: a Storage's history, candles. Charts draw it.
+ * A token is a one-row table and a history a many-row one, so anything taking a table takes them too.
+ */
+export type DataType = 'bang' | 'string' | 'number' | 'table' | 'token' | 'history' | 'ohlcv' | 'any'
 
 export const TYPE_COLORS: Record<DataType, string> = {
-  bang: '#facc15',
+  bang: '#cbd5e1',
   string: '#60a5fa',
   number: '#2dd4bf',
   table: '#a78bfa',
+  token: '#facc15',
+  history: '#a3e635',
+  ohlcv: '#e879f9',
   any: '#8b93a7',
 }
 
@@ -28,13 +38,18 @@ export function typeOfMessage(msg: Message): DataType {
   if (msg === 'bang') return 'bang'
   if (typeof msg === 'number') return 'number'
   if (typeof msg === 'string') return 'string'
+  if (isToken(msg)) return 'token'
+  if (isOhlcv(msg)) return 'ohlcv'
+  if (isHistory(msg)) return 'history'
   if (Array.isArray(msg) || isObject(msg)) return 'table'
   return 'any'
 }
 
 /** Can an inlet taking `accepts` receive a value of type `t`? */
 export function accepts(acceptsTypes: DataType[], t: DataType): boolean {
-  return acceptsTypes.includes('any') || acceptsTypes.includes(t)
+  if (acceptsTypes.includes('any') || acceptsTypes.includes(t)) return true
+  // A token is a table with one (known) row, a history a table of dated rows.
+  return (t === 'token' || t === 'history' || t === 'ohlcv') && acceptsTypes.includes('table')
 }
 
 /** Can this outlet be wired to this inlet? An `any` outlet may connect anywhere; delivery then checks each message. */
@@ -58,6 +73,9 @@ export const TYPE_LABELS: Record<DataType, string> = {
   string: 'text',
   number: 'number',
   table: 'table',
+  token: 'token',
+  history: 'history',
+  ohlcv: 'OHLCV',
   any: 'anything',
 }
 

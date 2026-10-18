@@ -71,6 +71,7 @@ export const jupiter = makeApiCard<Props>({
   source: 'Jupiter',
   defaultProps: { token: '', chain: 'solana', label: '', refreshSec: 0, quoteUsd: 0 },
   chains: ['solana'],
+  searchesBySymbol: true,
   needsToken: () => true,
   tokenHelp: 'a Solana mint or symbol (e.g. BONK), or a token row from a card',
   dataLabel: 'data — the token: price, 24h change, liquidity, market cap, holders, verified, organic score, authorities (+ the swap quote)',

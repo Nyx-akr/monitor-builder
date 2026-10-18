@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { BlockContext, BlockDefinition, Message, Port } from '../../blocks/types'
-import { describeItem, describeValue, isObject, legacySummaries, summarize } from '../../core/messages'
+import { describeItem, describeValue, isHistory, isObject, isToken, legacySummaries, summarize } from '../../core/messages'
 import './message.css'
 import { ValueWidget } from '../../page/widgets/ValueWidget'
 
@@ -52,7 +52,7 @@ function output(ctx: BlockContext<Props>, arg?: string) {
 /** The type the box sends, from what it holds. */
 function contentTypes(props: Props): NonNullable<Port['types']> {
   const data = heldData(props)
-  if (data !== undefined) return Array.isArray(data) || isObject(data) ? ['table'] : ['any']
+  if (data !== undefined) return isToken(data) ? ['token'] : isHistory(data) ? ['history'] : Array.isArray(data) || isObject(data) ? ['table'] : ['any']
   const text = (props.text ?? '').trim()
   if (!text) return ['any']
   if (text === 'bang') return ['bang']
@@ -98,7 +98,9 @@ function MessageBox({ props, ctx }: { props: Props; ctx: BlockContext<Props> }) 
   } else if (data !== undefined && isObject(data)) {
     body = (
       <div className="msg-dict scroll-y">
-        {Object.entries(data).map(([k, v]) => (
+        {Object.entries(data)
+          .filter(([k]) => k !== 'kind') // the Token mark is for the app, not for reading
+          .map(([k, v]) => (
           <div key={k} className="msg-kv">
             <span>{k}</span>
             <strong>{describeValue(v, k)}</strong>

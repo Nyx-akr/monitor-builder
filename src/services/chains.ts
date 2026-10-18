@@ -36,3 +36,24 @@ export const isEvmAddress = (s: string) => /^0x[0-9a-fA-F]{40}$/.test(s)
 
 /** The chain an address belongs to, when it can tell (an EVM address could be on any EVM chain). */
 export const guessChain = (address: string, fallback: string) => (isSolanaAddress(address) ? 'solana' : isEvmAddress(address) && fallback === 'solana' ? 'ethereum' : fallback)
+
+/** CoinGecko's platform ids → our chains (the order picks which contract a multi-chain coin uses). */
+const COINGECKO_PLATFORMS: [string, string][] = [
+  ['ethereum', 'ethereum'],
+  ['solana', 'solana'],
+  ['base', 'base'],
+  ['binance-smart-chain', 'bsc'],
+  ['arbitrum-one', 'arbitrum'],
+  ['polygon-pos', 'polygon'],
+  ['avalanche', 'avalanche'],
+  ['optimistic-ethereum', 'optimism'],
+]
+
+/** A CoinGecko coin's contract on a chain we know (null for native coins like BTC, or unknown chains). */
+export function coinContract(platforms: Record<string, string> | undefined, only?: string[]): { chain: string; address: string } | null {
+  for (const [platform, chain] of COINGECKO_PLATFORMS) {
+    const address = platforms?.[platform]
+    if (address && (!only || only.includes(chain))) return { chain, address }
+  }
+  return null
+}

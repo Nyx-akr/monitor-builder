@@ -6,7 +6,7 @@ import { useDexPair } from '../../hooks/useDexPair'
 import { track } from '../../core/fetchState'
 import { forgetSent } from '../../core/lastSent'
 import { FetchBadge } from '../../components/FetchBadge'
-import { emitOnce, errorMessage, isBang, isTokenItem, listItem, type TokenItem } from '../../core/messages'
+import { emitOnce, errorMessage, isBang, isToken, isTokenItem, listItem, type TokenItem } from '../../core/messages'
 import { age, percent, shortAddress, usdCompact, usdPrice } from '../../lib/format'
 import './tokenCard.css'
 
@@ -30,6 +30,7 @@ type Props = {
 /** One pair as a token item with all its details — what `data` sends. */
 function pairItem(p: DexPair): TokenItem {
   return {
+    kind: 'token',
     source: 'dexscreener',
     symbol: p.baseToken.symbol,
     name: p.baseToken.name,
@@ -46,6 +47,8 @@ function pairItem(p: DexPair): TokenItem {
     buys24h: p.txns?.h24?.buys ?? null,
     sells24h: p.txns?.h24?.sells ?? null,
     url: p.url,
+    pool: p.pairAddress,
+    logo: p.info?.imageUrl ?? null,
   }
 }
 
@@ -64,6 +67,7 @@ function listEntry(p: DexPair): TokenItem {
     address: p.baseToken.address,
     pair: p.pairAddress,
     url: p.url,
+    logo: p.info?.imageUrl ?? null,
   })
 }
 
@@ -263,12 +267,14 @@ export const tokenCard: BlockDefinition<Props> = {
   icon: '🪙',
   category: 'apis',
   // Older flows had separate trigger / refresh inlets; a signal on `token` does the same now.
-  renamedInlets: { trigger: 'token', refresh: 'token' },
+  // Very old flows had a separate trigger inlet; signals now go to refresh.
+  renamedInlets: { trigger: 'refresh' },
   inlets: [
-    { id: 'token', label: 'token — address, symbol (e.g. PEPE), "solana BONK" or a token’s dict (e.g. a clicked list row) fetches it · a signal (blank token) clears the token and fetches the list & info', types: ['string', 'table', 'bang'] },
+    { id: 'token', label: 'token — a Token (from a Token block, the Page’s token selector, a card’s data): fetches its pair', types: ['token'] },
+    { id: 'refresh', label: 'refresh — a signal (e.g. a Timer) fetches the list, the summary and the selected token again', types: ['bang'] },
   ],
   outlets: [
-    { id: 'data', label: 'data — the selected token’s details (price, liquidity, volume…)', types: ['table'] },
+    { id: 'data', label: 'data — the selected token’s details, as a Token (price, liquidity, volume…)', types: ['token'] },
     { id: 'list', label: 'list — each token in the chosen list as an item', types: ['table'] },
     { id: 'info', label: 'info — the market summary: counts and totals (no token needed)', types: ['table'] },
     { id: 'error', label: 'error — the token and why the lookup failed (not found, network…)', types: ['table'], error: true },
@@ -281,8 +287,8 @@ export const tokenCard: BlockDefinition<Props> = {
       outlets: [
         {
           id: 'data',
-          label: `data — ${token ? `${token}${props.chain ? ` on ${props.chain}` : ''} — its` : 'the selected token’s (no token selected yet)'} details: price, liquidity, market cap, volume, buys / sells`,
-          types: ['table'],
+          label: `data — ${token ? `${token}${props.chain ? ` on ${props.chain}` : ''} — its` : 'the selected token’s (no token selected yet)'} details, as a Token: price, liquidity, market cap, volume, buys / sells`,
+          types: ['token'],
         },
         { id: 'list', label: `list — ${src.label} (${src.help}, up to 30 tokens), each with price, 24h change, liquidity and volume`, types: ['table'] },
         { id: 'info', label: `info — summary of the ${src.label.toLowerCase()} list: token count, tokens per chain, total liquidity and volume`, types: ['table'] },
@@ -291,6 +297,7 @@ export const tokenCard: BlockDefinition<Props> = {
     }
   },
   receive: (ctx, inlet, msg) => {
+    if (inlet === 'refresh') return bang(ctx)
     if (inlet !== 'token') return
     // A plain signal (e.g. from a Timer, or an empty message box) is a blank token: clear the selected
     // token, then fetch what needs no token (list & info). Right-click → Fetch now refreshes without clearing.
@@ -301,13 +308,13 @@ export const tokenCard: BlockDefinition<Props> = {
     }
     // A table of many rows: its first row.
     if (Array.isArray(msg)) msg = msg[0] ?? ''
-    // A token item from a list (e.g. another card's `list` outlet).
-    if (isTokenItem(msg)) {
+    // A Token (from a Token block, a list row, another card's data).
+    if (isToken(msg) || isTokenItem(msg)) {
       if (msg.address && msg.chain) {
         ctx.update({
           query: msg.address,
           chain: msg.chain,
-          pairAddress: msg.source === 'dexscreener' && msg.pair ? msg.pair : '',
+          pairAddress: typeof msg.pool === 'string' && msg.pool ? msg.pool : msg.source === 'dexscreener' && msg.pair ? String(msg.pair) : '',
           pairLabel: msg.quote ? `${msg.symbol}/${msg.quote}` : msg.symbol,
         })
         return sendData(ctx)

@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { BlockContext, BlockDefinition, Port } from '../../blocks/types'
 import {
   CANDLE_SIZES,
   ChartView,
+  DEFAULT_TIMEFRAME,
   DEFAULT_TOKENS,
   MAX_LINES,
   STYLES,
   TIMEFRAMES,
   mergeLines,
-  timeframeOf,
   parseSeries,
   toLines,
   type ChartStyle,
@@ -65,14 +65,6 @@ function ChartBlock({ props, ctx, big }: { props: Props; ctx: BlockContext<Props
     }
   }, [ctx.id])
 
-  // The chosen timeframe goes out (when the flow opens, and on every change): a Storage wired to it sends
-  // just that span of its history — the cropping happens there.
-  const ctxRef = useRef(ctx)
-  ctxRef.current = ctx
-  useEffect(() => {
-    ctxRef.current.send('timeframe', timeframeOf(props.timeframe).value)
-  }, [props.timeframe])
-
   // Input by input: its own line, or one line per token it carried; an input with nothing yet still gets
   // a guide entry ("no data"). At most one line per colour.
   // Tokens named in Settings always get a guide entry on an input that carries tokens ("no data" if
@@ -100,6 +92,7 @@ function ChartBlock({ props, ctx, big }: { props: Props; ctx: BlockContext<Props
       asPercent={props.scale === 'percent'}
       candleSize={props.candle}
       big={big}
+      onTimeframe={(value) => ctx.update({ timeframe: value })}
       emptyText={
         hasData
           ? 'Nothing in this timeframe — pick a longer one in the right panel'
@@ -115,7 +108,7 @@ export const chart: BlockDefinition<Props> = {
   description: 'Draw values over time — line, area or candles',
   icon: '📈',
   category: 'objects',
-  defaultProps: { lines: 1, names: '', field: 'price', tokens: '', style: 'line', candle: 'auto', timeframe: '1h', scale: 'value', points: '' },
+  defaultProps: { lines: 1, names: '', field: 'price', tokens: '', style: 'line', candle: 'auto', timeframe: DEFAULT_TIMEFRAME, scale: 'value', points: '' },
   settingsFor: (props) => [
     { key: 'style', label: 'Chart style', type: 'select', options: STYLES },
     ...(props.style === 'candle'
@@ -154,22 +147,14 @@ export const chart: BlockDefinition<Props> = {
       { length: lineCount(props) },
       (_, i): Port => ({
         id: inletId(i),
-        label: `${nameOf(props, i)} — a Storage’s history redraws this input’s lines (a history of token lists draws one line per token); a number or dict adds a point now`,
-        types: ['table', 'number', 'string'],
+        label: `${nameOf(props, i)} — OHLCV candles (GeckoTerminal, CoinGecko OHLC) or a History (a Storage’s history, DefiLlama prices) — drawn on this input’s line (a history of token lists draws one line per token)`,
+        types: ['ohlcv', 'history'],
       }),
     ),
   }),
-  outlets: [
-    {
-      id: 'timeframe',
-      label: 'timeframe — the chosen timeframe (5m, 15m, 1h, 4h, 24h, 7d, 30d, all), sent on every change — wire into a Storage’s timeframe so it sends just that span',
-      types: ['string'],
-    },
-  ],
-  // Wiring timeframe somewhere sends the current one straight away.
-  onWired: (ctx, outlet) => {
-    if (outlet === 'timeframe') ctx.send('timeframe', timeframeOf(ctx.props.timeframe).value)
-  },
+  // Wiring a source in draws what it last sent straight away (no need to fetch again).
+  replayOnConnect: true,
+  outlets: [],
   menu: [{ label: 'Clear chart', run: (ctx) => save(ctx, {}) }],
   receive: (ctx, inlet, msg) => {
     const i = Number(inlet.replace('line', '')) - 1

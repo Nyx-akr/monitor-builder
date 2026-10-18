@@ -299,7 +299,8 @@ export const get: BlockDefinition<Props> = {
     const t = decodeFields(props.knownFields).find(([p]) => p === props.field)?.[1]
     const many = Boolean(props.knownRows)
     if (many && props.row === '*') return { out: ['table'] }
-    if (many && props.row && !props.field) return { out: ['table'] }
+    // A whole row of a token list is a Token (rows offered by symbol are tokens).
+    if (many && props.row && !props.field) return { out: decodeRows(props.knownRows).some(([v]) => v.startsWith('sym:')) ? ['token'] : ['table'] }
     return { out: (t ? [t] : ['any']) as NonNullable<Port['types']> }
   },
   receive: (ctx, _inlet, msg) => {

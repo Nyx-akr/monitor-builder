@@ -19,12 +19,6 @@ import './storage.css'
 type Props = {
   /** The storage file this block writes to: flows/storage/<store>.jsonl. */
   store: string
-  /** How many of the newest records a signal sends out of `history` (0 = all). */
-  historyLimit?: number
-  /** How far back history goes ('all', '30d', '7d', '24h', '4h', '1h'). */
-  historyWindow: string
-  /** At most this many batches per history, spread evenly over its time span. */
-  historyMax: number
   /** How many of the newest records the file keeps — older ones are removed (0 = keep everything). */
   keepLimit: number
   /** Send the history out again after every new batch (so a Chart follows along). */
@@ -87,26 +81,11 @@ async function store(ctx: BlockContext<Props>, msg: Message) {
   }
 }
 
-/** How far back history goes. */
-const WINDOWS: { value: string; label: string; ms: number }[] = [
-  { value: 'all', label: 'Everything stored', ms: 0 },
-  { value: '30d', label: 'Last 30 days', ms: 30 * 86400e3 },
-  { value: '7d', label: 'Last 7 days', ms: 7 * 86400e3 },
-  { value: '24h', label: 'Last 24 hours', ms: 24 * 3600e3 },
-  { value: '4h', label: 'Last 4 hours', ms: 4 * 3600e3 },
-  { value: '1h', label: 'Last hour', ms: 3600e3 },
-  { value: '15m', label: 'Last 15 minutes', ms: 15 * 60e3 },
-  { value: '5m', label: 'Last 5 minutes', ms: 5 * 60e3 },
-]
-const DEFAULT_MAX = 500
-
-/** The whole history (within its time span, at most historyMax batches spread evenly), oldest first. */
-async function sendHistory(ctx: BlockContext<Props>, windowValue = ctx.props.historyWindow) {
+/** The whole history, oldest first. */
+async function sendHistory(ctx: BlockContext<Props>) {
   if (!ctx.props.store) return ctx.send('history', [])
   try {
-    const window = WINDOWS.find((w) => w.value === (windowValue ?? 'all')) ?? WINDOWS[0]
-    const max = limitOf(ctx.props.historyMax ?? DEFAULT_MAX) || DEFAULT_MAX
-    const records = await readRecords(ctx.props.store, 0, { since: window.ms ? Date.now() - window.ms : 0, max })
+    const records = await readRecords(ctx.props.store, 0)
     ctx.send('history', records as unknown as Message)
   } catch (e) {
     report(ctx.id, { error: (e as Error).message })
@@ -190,7 +169,7 @@ export const storage: BlockDefinition<Props> = {
   description: 'Keep a dated history of everything sent to it',
   icon: '🗄',
   category: 'objects',
-  defaultProps: { store: '', historyWindow: 'all', historyMax: DEFAULT_MAX, keepLimit: 0, historyOnStore: true },
+  defaultProps: { store: '', keepLimit: 0, historyOnStore: true },
   // Each new Storage gets its own file; a copy starts its own history too.
   prepare: async (props, reason) => (reason === 'add' && props.store ? null : { store: (await createStore()).name }),
   settings: [],
@@ -213,20 +192,6 @@ export const storage: BlockDefinition<Props> = {
         help: 'How many batches the file keeps: once it’s full, each new batch removes the oldest one. 0 = keep everything (no limit). Lowering it deletes the oldest batches over the limit.',
       },
       {
-        key: 'historyWindow',
-        label: 'History to send',
-        type: 'select',
-        options: WINDOWS.map(({ value, label }) => ({ value, label })),
-        help: 'How far back history goes when it’s sent (when wired, on a signal, or Send history).',
-      },
-      {
-        key: 'historyMax',
-        label: 'Most batches to send',
-        type: 'number',
-        min: 2,
-        help: `A long history is thinned to this many batches, spread evenly over its whole time span (the newest always included), so it stays quick. Default ${DEFAULT_MAX}.`,
-      },
-      {
         key: 'historyOnStore',
         label: 'Send each new batch on history',
         type: 'toggle',
@@ -240,18 +205,13 @@ export const storage: BlockDefinition<Props> = {
       label: 'data — anything arriving is stored with its date and time, and sent straight on · a signal sends the history instead',
       types: ['string', 'number', 'table', 'bang'],
     },
-    {
-      id: 'timeframe',
-      label: 'timeframe — how far back history goes (5m, 15m, 1h, 4h, 24h, 7d, 30d, all), e.g. from a Chart’s timeframe: sets History to send and sends that span',
-      types: ['string'],
-    },
   ],
   outlets: [
     { id: 'out', label: 'what just arrived, passed straight on', types: ['any'] },
     {
       id: 'history',
-      label: 'history — a list of { at, type, data }, oldest first: the whole history when wired or on a signal; after that, each new batch by itself',
-      types: ['table'],
+      label: 'history — the stored batches as a History (dated rows { at, type, data }), oldest first: the whole history when wired or on a signal; after that, each new batch by itself',
+      types: ['history'],
     },
   ],
   menu: [
@@ -269,16 +229,7 @@ export const storage: BlockDefinition<Props> = {
       },
     },
   ],
-  receive: (ctx, inlet, msg) => {
-    // A timeframe (e.g. a Chart's): the history it asks for is cut here, and sent at once.
-    if (inlet === 'timeframe') {
-      const value = String(msg).trim().toLowerCase()
-      if (!WINDOWS.some((w) => w.value === value)) return
-      if (value !== ctx.props.historyWindow) ctx.update({ historyWindow: value })
-      return sendHistory(ctx, value)
-    }
-    return msg === 'bang' ? sendHistory(ctx) : store(ctx, msg)
-  },
+  receive: (ctx, _inlet, msg) => (msg === 'bang' ? sendHistory(ctx) : store(ctx, msg)),
   // Wiring history into something (e.g. a Chart) fills it right away.
   onWired: (ctx, outlet) => {
     if (outlet === 'history') sendHistory(ctx)

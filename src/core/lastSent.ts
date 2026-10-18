@@ -1,5 +1,5 @@
 import type { Message } from '../blocks/types'
-import { describeItem, describeValue, isObject, isTokenItem } from './messages'
+import { describeItem, describeValue, isHistory, isObject, isToken, isTokenItem } from './messages'
 
 /**
  * What each outlet sent most recently — shown when hovering it, so you can see the data that's actually
@@ -28,6 +28,11 @@ export function previewLines(msg: Message): string[] {
   if (msg === 'bang') return ['a signal (no data — a blank token)']
   if (typeof msg === 'number') return [describeValue(msg)]
   if (typeof msg === 'string') return [`“${short(msg)}”`]
+  if (isHistory(msg)) {
+    const rows = msg as { at: string }[]
+    return [`history · ${rows.length} point${rows.length === 1 ? '' : 's'}`, `${timeOf(Date.parse(rows[0].at))} → ${timeOf(Date.parse(rows[rows.length - 1].at))}`]
+  }
+  if (isToken(msg)) return [`token · ${msg.symbol} · ${msg.name}${msg.chain ? ` · ${msg.chain}` : ''}`, msg.address ? String(msg.address) : 'no contract address']
   if (Array.isArray(msg)) {
     const names = msg.slice(0, 4).map((item) =>
       isTokenItem(item)

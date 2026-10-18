@@ -11,14 +11,16 @@ export type TokenSource = (typeof TOKEN_SOURCES)[number]
 
 export interface TokenItem {
   [key: string]: Message | undefined
+  /** Every token row is a Token (see Token below). */
+  kind?: 'token'
   source: TokenSource
   symbol: string
   name: string
   /** CoinGecko coin id */
-  id?: string
-  /** Contract address (DexScreener) */
-  address?: string
-  chain?: string
+  id?: string | null
+  /** Contract address (null for native coins like BTC) */
+  address?: string | null
+  chain?: string | null
   /** Pair address (DexScreener) */
   pair?: string
   dex?: string
@@ -32,7 +34,7 @@ export interface TokenItem {
 }
 
 export type ListItemFields = Pick<TokenItem, 'source' | 'symbol' | 'name'> &
-  Partial<Pick<TokenItem, 'price' | 'change24h' | 'marketCap' | 'volume24h' | 'liquidity' | 'chain' | 'address' | 'pair' | 'id' | 'url'>>
+  Partial<Pick<TokenItem, 'price' | 'change24h' | 'marketCap' | 'volume24h' | 'liquidity' | 'chain' | 'address' | 'pair' | 'id' | 'url' | 'logo'>>
 
 /**
  * The one shape every card's `list` item has — DexScreener and CoinGecko alike: the same fields in the
@@ -41,6 +43,7 @@ export type ListItemFields = Pick<TokenItem, 'source' | 'symbol' | 'name'> &
  */
 export function listItem(f: ListItemFields): TokenItem {
   return {
+    kind: 'token',
     source: f.source,
     symbol: f.symbol.toUpperCase(),
     name: f.name,
@@ -54,6 +57,7 @@ export function listItem(f: ListItemFields): TokenItem {
     pair: f.pair ?? null,
     id: f.id ?? null,
     url: f.url ?? null,
+    logo: f.logo ?? null,
   } as TokenItem
 }
 
@@ -64,6 +68,39 @@ export const errorMessage = (source: TokenItem['source'], token: string, error: 
 
 export const isObject = (msg: Message): msg is { [key: string]: Message | undefined } =>
   typeof msg === 'object' && msg !== null && !Array.isArray(msg)
+
+/**
+ * A Token: which token, with what it takes to look it up anywhere — chain + contract address (plus symbol,
+ * name, pool, logo, and a market snapshot when a card sent it). Marked kind: 'token'.
+ */
+export interface Token {
+  [key: string]: Message | undefined
+  kind: 'token'
+  chain: string
+  address: string
+  symbol: string
+  name: string
+  pool?: string | null
+  logo?: string | null
+  /** CoinGecko's id, when known (CoinGecko rows). */
+  id?: string | null
+  source?: string
+}
+
+export const isToken = (msg: Message | undefined): msg is Token =>
+  isObject(msg as Message) && (msg as Token).kind === 'token' && typeof (msg as Token).symbol === 'string'
+
+/** OHLCV candles: a history whose rows' data has open / high / low / close (+ volume) — GeckoTerminal, CoinGecko OHLC. */
+export const isOhlcv = (msg: Message | undefined): boolean =>
+  isHistory(msg) &&
+  (msg as { data: Message }[]).every((r) => {
+    const d = r.data as Record<string, unknown> | null
+    return isObject(r.data) && typeof d?.open === 'number' && typeof d?.high === 'number' && typeof d?.low === 'number' && typeof d?.close === 'number'
+  })
+
+/** A history: dated rows ({ at, data }), oldest first — a Storage's history, a price history. */
+export const isHistory = (msg: Message | undefined): boolean =>
+  Array.isArray(msg) && msg.length > 0 && msg.every((r) => isObject(r) && typeof (r as { at?: unknown }).at === 'string' && 'data' in (r as object))
 
 export const isTokenItem = (msg: Message): msg is TokenItem =>
   isObject(msg) && TOKEN_SOURCES.includes(msg.source as TokenSource) && typeof msg.symbol === 'string'
@@ -100,6 +137,7 @@ export const tableSize = (rows: Message[]) => `table · ${rows.length} row${rows
 
 /** Short summary used as a message box's text when it holds a table: many rows, one token, or one row. */
 export function summarize(msg: Message): string {
+  if (isHistory(msg)) return `history · ${(msg as Message[]).length} points`
   if (Array.isArray(msg)) return tableSize(msg)
   if (isTokenItem(msg)) return describeItem(msg)
   if (isObject(msg)) return `table · 1 row · ${Object.keys(msg).length} fields`
@@ -108,7 +146,7 @@ export function summarize(msg: Message): string {
 
 /** Summaries from before tables (list / dict), so message boxes saved then still show their data. */
 export function legacySummaries(msg: Message): string[] {
-  if (Array.isArray(msg)) return [`list · ${msg.length} item${msg.length === 1 ? '' : 's'}`]
+  if (Array.isArray(msg)) return [`list · ${msg.length} item${msg.length === 1 ? '' : 's'}`, tableSize(msg)]
   if (isObject(msg) && !isTokenItem(msg)) return [`${Object.keys(msg).length} fields`]
   return []
 }

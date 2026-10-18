@@ -15,7 +15,9 @@ export const TIMEFRAMES: { value: string; label: string; ms: number }[] = [
   { value: '30d', label: 'Last 30 days', ms: 30 * 86400e3 },
   { value: 'all', label: 'Everything', ms: Infinity },
 ]
-export const timeframeOf = (value: string) => TIMEFRAMES.find((x) => x.value === value) ?? TIMEFRAMES[2]
+/** The default timeframe: the last 24 hours. */
+export const DEFAULT_TIMEFRAME = '24h'
+export const timeframeOf = (value: string) => TIMEFRAMES.find((x) => x.value === value) ?? TIMEFRAMES.find((x) => x.value === DEFAULT_TIMEFRAME)!
 
 export const STYLES: { value: ChartStyle; label: string }[] = [
   { value: 'line', label: 'Line' },

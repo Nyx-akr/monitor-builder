@@ -42,7 +42,7 @@ function spaced<T>(job: () => Promise<T>): Promise<T> {
     try {
       return await job()
     } catch (e) {
-      if (!retry || !/rate limit/i.test((e as Error).message)) throw e
+      if (!retry || !/rate limit/i.test((e as Error).message)) throw e // (includes the browser's "didn't answer")
       pausedUntil = Date.now() + BACKOFF_MS
       return attempt(false)
     }
@@ -70,12 +70,14 @@ export const geckoterminal = makeApiCard<Props>({
   description: 'OHLCV candles for a DEX token — wire into a Chart',
   icon: '🦎',
   source: 'GeckoTerminal',
-  defaultProps: { token: '', chain: 'solana', label: '', refreshSec: 0, pair: '', candle: '15m', count: 100 },
+  // Candles move on their own: ask again every minute (each ask is one request — well within the limit).
+  defaultProps: { token: '', chain: 'solana', label: '', refreshSec: 60, pair: '', candle: '15m', count: 100 },
   chains: ['solana', 'ethereum', 'bsc', 'base', 'arbitrum', 'polygon', 'avalanche', 'optimism'],
   needsToken: () => true,
   tokenHelp: 'a token address (its deepest pool is used), or a token row from a card (DexScreener rows bring their pool)',
   dataLabel: 'data — the range: last close, change over the candles, total volume, high / low, the pool',
-  listLabel: 'list — the candles, oldest first: one dated row each with open, high, low, close, volume (price = close) — wire into a Chart',
+  listLabel: 'list — the candles as OHLCV, oldest first: one dated row each with open, high, low, close, volume (price = close) — wire into a Chart',
+  listTypes: () => ['ohlcv'],
   settings: () => [
     { key: 'candle', label: 'Candle size', type: 'select', options: CANDLES.map(({ value, label }) => ({ value, label })) },
     { key: 'count', label: 'Candles', type: 'number', min: 2, max: 1000, help: 'How many candles back from now (up to 1000).' },

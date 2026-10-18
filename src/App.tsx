@@ -6,6 +6,7 @@ import { Inspector } from './components/Inspector'
 import { FlowSelector } from './components/FlowSelector'
 import { useFlow } from './hooks/useFlow'
 import type { BlockProps } from './blocks/types'
+import { lastSent } from './core/lastSent'
 import { useRuntime } from './hooks/useRuntime'
 
 export default function App() {
@@ -136,6 +137,12 @@ export default function App() {
               const source = flow.blocks.find((b) => b.id === from.block)
               const onWired = source && blockByType[source.type].onWired
               if (onWired) setTimeout(() => onWired(runtime.makeCtx(from.block), from.port), 50)
+              // A block that wants it (a Chart) gets what the source last sent, without anything being fetched again.
+              const target = flow.blocks.find((b) => b.id === to.block)
+              const targetDef = target && blockByType[target.type]
+              const last = lastSent(from.block, from.port)
+              if (targetDef?.replayOnConnect && !onWired && last && last.msg !== 'bang')
+                setTimeout(() => targetDef.receive?.(runtime.makeCtx(to.block), to.port, last.msg), 50)
             }}
             onDisconnect={flow.disconnect}
             onDock={flow.dock}

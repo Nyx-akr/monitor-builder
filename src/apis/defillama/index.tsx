@@ -39,10 +39,13 @@ export const defillama = makeApiCard<Props>({
   source: 'DefiLlama',
   defaultProps: { token: '', chain: 'ethereum', label: '', refreshSec: 0, mode: 'price', top: 25, historyDays: 1 },
   chains: ['ethereum', 'solana', 'bsc', 'base', 'arbitrum', 'polygon', 'avalanche', 'optimism'],
+  // A CoinGecko id (bitcoin) is fine here too.
+  searchesBySymbol: true,
   needsToken: (props) => props.mode === 'price',
   tokenHelp: 'a contract address, a CoinGecko id (bitcoin), chain:address, or a token row from a card',
   dataLabel: 'data — Token price: the token (symbol, price, confidence) · rankings: a summary (rows, total)',
-  listLabel: 'list — Token price: its price history as dated rows (wire it into a Chart) · rankings: one row per chain / protocol / DEX',
+  listLabel: 'list — Token price: its price History (wire it into a Chart) · rankings: one row per chain / protocol / DEX',
+  listTypes: (props) => (props.mode === 'price' ? ['history'] : ['table']),
   settings: (props) => [
     { key: 'mode', label: 'What to fetch', type: 'select', options: MODES },
     ...(props.mode === 'price'
