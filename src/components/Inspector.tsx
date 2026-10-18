@@ -1,7 +1,7 @@
 import { blockByType } from '../blocks/registry'
 import type { BlockInstance, BlockProps, SettingField, Wire } from '../blocks/types'
+import type { Value } from '../core/values'
 import { TokenSearch } from './TokenSearch'
-import { CoinSearch } from './CoinSearch'
 import { portsOf } from '../core/ports'
 import { TYPE_COLORS, TYPE_LABELS, ERROR_COLOR, typesOf } from '../core/dataTypes'
 
@@ -34,9 +34,15 @@ function Field({ field, value, onChange }: { field: SettingField; value: BlockPr
       )
       break
     case 'tokenSearch':
-    case 'coinSearch':
       // Rendered by the Inspector directly since they write several props.
       return null
+    case 'heading':
+      return (
+        <div className="field-heading">
+          <b>{field.label}</b>
+          {field.help && <small>{field.help}</small>}
+        </div>
+      )
     case 'toggle':
       return (
         <label className="field toggle">
@@ -128,12 +134,18 @@ export function Inspector({
   wires,
   onChange,
   onDisconnect,
+  inputs = {},
+  outputs = {},
 }: {
   block: BlockInstance | undefined
   blocks: BlockInstance[]
   wires: Wire[]
   onChange: (props: Partial<BlockProps>) => void
   onDisconnect: (wireId: string) => void
+  /** What's wired into the block now (settings like column pickers list what arrives). */
+  inputs?: Record<string, Value | undefined>
+  /** What it gives out now (for its Info section). */
+  outputs?: Record<string, Value | undefined>
 }) {
   if (!block) {
     return (
@@ -149,15 +161,14 @@ export function Inspector({
       <h2>
         {def.icon} {def.label}
       </h2>
-      {(def.settingsFor?.(block.props) ?? def.settings).map((f) =>
+      {(def.settingsFor?.(block.props, inputs) ?? def.settings).map((f) =>
         f.type === 'tokenSearch' ? (
           <TokenSearch key={f.key} props={block.props} onChange={onChange} />
-        ) : f.type === 'coinSearch' ? (
-          <CoinSearch key={f.key} props={block.props} onChange={onChange} />
         ) : (
           <Field key={f.key} field={f} value={block.props[f.key]} onChange={(v) => onChange({ [f.key]: v })} />
         ),
       )}
+      {def.Info && <def.Info props={block.props} inputs={inputs} outputs={outputs} update={onChange} />}
       <PortList block={block} blocks={blocks} wires={wires} onDisconnect={onDisconnect} />
     </aside>
   )

@@ -26,7 +26,7 @@ export function flowFiles(dir = 'flows'): Plugin {
   }
 
   const write = async (name: string, flow: unknown) => {
-    const tmp = `${file(name)}.tmp`
+    const tmp = `${file(name)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
     await fs.writeFile(tmp, JSON.stringify(flow, null, 2) + '\n')
     await fs.rename(tmp, file(name)) // atomic: a crash never leaves half a file
   }

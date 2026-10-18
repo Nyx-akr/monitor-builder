@@ -3,19 +3,23 @@ import { blockByType } from './blocks/registry'
 import { Palette, PaletteCard, type PaletteDrag } from './components/Palette'
 import { Canvas } from './components/Canvas'
 import { Inspector } from './components/Inspector'
+import { Dashboard } from './components/Dashboard'
 import { FlowSelector } from './components/FlowSelector'
 import { useFlow } from './hooks/useFlow'
 import type { BlockProps } from './blocks/types'
-import { lastSent } from './core/lastSent'
-import { useRuntime } from './hooks/useRuntime'
+import { useGraph } from './hooks/useGraph'
 
 export default function App() {
   const flow = useFlow()
   const { view } = flow
   const [editing, setEditing] = useState(true)
+  // The Page full screen is the UI: nothing is edited there; leaving it returns to how it was.
+  const editingBeforeFull = useRef(true)
+  const [fullPhase, setFullPhase] = useState<'off' | 'entering' | 'on' | 'leaving'>('off')
   const [paletteDrag, setPaletteDrag] = useState<PaletteDrag | null>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
-  const runtime = useRuntime({ blocks: flow.blocks, wires: flow.wires, editing, update: flow.update })
+  // Every block's outputs, computed live from its inputs and its engine data.
+  const runtime = useGraph({ blocks: flow.blocks, wires: flow.wires, editing, update: flow.update })
 
   /** Screen point (relative to the canvas) → world coordinates. */
   const toWorld = (sx: number, sy: number) => ({ x: (sx - view.x) / view.zoom, y: (sy - view.y) / view.zoom })
@@ -131,22 +135,21 @@ export default function App() {
             onMove={flow.moveTo}
             onDuplicate={flow.duplicate}
             onRemove={flow.remove}
-            onConnect={(from, to) => {
-              if (!flow.connect(from, to)) return
-              // Let the source react to its new wire (e.g. a Storage sends its history) once the wire is in place.
-              const source = flow.blocks.find((b) => b.id === from.block)
-              const onWired = source && blockByType[source.type].onWired
-              if (onWired) setTimeout(() => onWired(runtime.makeCtx(from.block), from.port), 50)
-              // A block that wants it (a Chart) gets what the source last sent, without anything being fetched again.
-              const target = flow.blocks.find((b) => b.id === to.block)
-              const targetDef = target && blockByType[target.type]
-              const last = lastSent(from.block, from.port)
-              if (targetDef?.replayOnConnect && !onWired && last && last.msg !== 'bang')
-                setTimeout(() => targetDef.receive?.(runtime.makeCtx(to.block), to.port, last.msg), 50)
-            }}
+            onConnect={flow.connect}
             onDisconnect={flow.disconnect}
             onDock={flow.dock}
             onUndock={flow.undock}
+            onFullPhase={setFullPhase}
+            onPageLayout={(layout) => {
+              const page = flow.blocks.find((b) => b.type === 'page')
+              if (page) flow.edit(page.id, { layout })
+            }}
+            onFullscreen={(on) => {
+              if (on) {
+                editingBeforeFull.current = editing
+                setEditing(false)
+              } else setEditing(editingBeforeFull.current)
+            }}
           />
           {editing && (
             <Inspector
@@ -155,9 +158,12 @@ export default function App() {
               wires={flow.wires}
               onChange={(p) => selected && flow.edit(selected.id, p)}
               onDisconnect={flow.disconnect}
+              inputs={selected ? runtime.results.get(selected.id)?.inputs : undefined}
+              outputs={selected ? runtime.results.get(selected.id)?.outputs : undefined}
             />
           )}
       </div>
+      {fullPhase === 'on' && <Dashboard blocks={flow.blocks} makeCtx={runtime.makeCtx} onExit={() => window.dispatchEvent(new Event('dex:exit-full'))} />}
       {paletteDrag && (
         <div className="drag-ghost" style={{ left: paletteDrag.x - paletteDrag.grabX, top: paletteDrag.y - paletteDrag.grabY }}>
           <PaletteCard def={blockByType[paletteDrag.type]} card={paletteDrag.card} ghost />

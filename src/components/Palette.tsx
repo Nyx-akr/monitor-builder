@@ -1,7 +1,6 @@
 import { useRef, type PointerEvent } from 'react'
-import { blocks, blockByType } from '../blocks/registry'
+import { blocks, CATEGORY_LABELS, CATEGORY_ORDER } from '../blocks/registry'
 import type { BlockDefinition, BlockProps } from '../blocks/types'
-import { deleteStore, formatBytes, useStores } from '../services/storage'
 
 /** Movement (px) before a press on a palette item becomes a drag instead of a click. */
 const DRAG_THRESHOLD = 5
@@ -120,50 +119,24 @@ export function Palette({
   onDrag: (drag: PaletteDrag | null) => void
   onDrop: (drag: PaletteDrag) => void
 }) {
-  const stores = useStores()
-  const storageDef = blockByType.storage
   return (
     <aside className="panel palette">
       <h2>Blocks</h2>
       <p className="hint">Drag a block onto the canvas</p>
-      {(['apis', 'objects'] as const).map((category) => {
+      {CATEGORY_ORDER.map((category) => {
         // Permanent blocks (the Page) are in every flow already — nothing to add.
         const group = blocks.filter((b) => b.category === category && !b.permanent)
         if (group.length === 0) return null
         return (
           <div key={category} className="palette-group">
-            <h3>{category === 'apis' ? 'APIs' : 'Objects'}</h3>
+            <h3>{CATEGORY_LABELS[category]}</h3>
             {group.map((def) => (
               <PaletteItem key={def.type} def={def} onAdd={() => onAdd(def.type)} onDrag={onDrag} onDrop={onDrop} />
             ))}
           </div>
         )
       })}
-      {storageDef && stores.length > 0 && (
-        <div className="palette-group">
-          <h3>Storage</h3>
-          {stores.map((s) => {
-            const card = { label: s.name, description: `${s.entries.toLocaleString('en-US')} ${s.entries === 1 ? 'batch' : 'batches'} · ${formatBytes(s.bytes)}` }
-            return (
-              <PaletteItem
-                key={s.name}
-                def={storageDef}
-                props={{ store: s.name }}
-                card={card}
-                title={`flows/storage/${s.name}.jsonl — drag onto the canvas to read or add to this history · right-click to delete it`}
-                onAdd={() => onAdd('storage', { store: s.name })}
-                onDrag={onDrag}
-                onDrop={onDrop}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  if (confirm(`Delete ${s.name} and its whole history (${card.description})? This can’t be undone.`)) deleteStore(s.name).catch((err) => alert(err.message))
-                }}
-              />
-            )
-          })}
-        </div>
-      )}
-      <p className="hint soon">Add a block: create a folder in src/objects (or src/apis) and list it in its index.ts</p>
+      <p className="hint soon">Pick tokens → get Data → Calculate → Show (drop into the Page) → Rules</p>
     </aside>
   )
 }

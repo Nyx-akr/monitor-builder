@@ -5,7 +5,7 @@ import { GRID, type View } from '../hooks/useFlow'
 import { compatible, describeTypes, portBackground, portColor } from '../core/dataTypes'
 import { findPort, portsOf } from '../core/ports'
 import { lastSent, previewLines, timeOf } from '../core/lastSent'
-import { freeSlotAt, pageOf, placeDocked, slotById, type Slot } from '../core/pageLayout'
+import { PAGE_BAR_H, PAGE_H, PAGE_W, computeLayout, freeSlotAt, pageOf, parseLayout, placeDocked, removeBox, setRatio, slotById, splitBox, type Divider, type LayoutNode, type Slot } from '../core/pageLayout'
 
 /** Can this block go into a Page box? Blocks with a widget look (message box, dict…), except fixed ones. */
 const canDock = (b: BlockInstance) => Boolean(blockByType[b.type]?.Widget) && !blockByType[b.type]?.dockedIn
@@ -51,10 +51,16 @@ interface Props {
   /** Dropped into an empty Page box. */
   onDock: (id: string, slot: string) => void
   onUndock: (id: string) => void
+  /** The Page full screen (the UI): called when it starts entering (true) and when it has left (false). */
+  onFullscreen?: (on: boolean) => void
+  /** Each step of the full screen: off → entering → on (the dashboard shows) → leaving → off. */
+  onFullPhase?: (phase: 'off' | 'entering' | 'on' | 'leaving') => void
+  /** A new Page layout (Edit layout: split, resize, remove boxes). */
+  onPageLayout?: (layout: string) => void
 }
 
 type MenuTarget = { block: string } | { wire: string }
-type MenuItem = { label: string; hint?: string; danger?: boolean; run: () => void } | 'separator'
+type MenuItem = { label: string; hint?: string; danger?: boolean; run: () => void } | 'separator' | { note: string }
 
 /** Right-click menu, positioned in screen space over the canvas. */
 function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
@@ -79,6 +85,10 @@ function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: Me
       {items.map((item, i) =>
         item === 'separator' ? (
           <div key={i} className="ctx-sep" />
+        ) : 'note' in item ? (
+          <div key={i} className="ctx-note">
+            {item.note}
+          </div>
         ) : (
           <button
             key={i}
@@ -364,6 +374,9 @@ export function Canvas({
   onRemove,
   onDock,
   onUndock,
+  onFullscreen,
+  onFullPhase,
+  onPageLayout,
 }: Props) {
   // Docked widgets sit in their Page box: their position is the box's, so wires attach there too.
   const blocks = placeDocked(rawBlocks)
@@ -417,9 +430,9 @@ export function Canvas({
     if (!block) return []
     const def = blockByType[block.type]
     const own = (def.menu ?? []).map((m) => ({ label: m.label, run: () => m.run(makeCtx(block.id)) }))
-    // A permanent block (the Page) can only be moved.
-    if (def.permanent) return own
     const docked = block.dock && !def.dockedIn ? [{ label: 'Take out of the Page', run: () => onUndock(block.id) }] : []
+    // A permanent block (the Page, the Feed) is there once in every flow: it can only be moved.
+    if (def.permanent) return [...own, ...docked, ...(own.length || docked.length ? (['separator'] as const) : []), { note: `The ${def.label} is always here — it can be moved, not deleted or duplicated.` }]
     return [
       ...own,
       ...docked,
@@ -510,6 +523,8 @@ export function Canvas({
         if (scroller.scrollHeight > scroller.clientHeight && !((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom))) return
       }
       e.preventDefault()
+      // Full screen is a fixed dashboard: it neither zooms nor pans.
+      if (fullRef.current.full !== 'off') return
       const r = el.getBoundingClientRect()
       // Normalise line/page deltas to pixels so every mouse zooms at the same speed.
       const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1)
@@ -523,6 +538,7 @@ export function Canvas({
 
   const onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0 && e.button !== 1) return
+    if (full !== 'off') return // a fixed dashboard: no panning
     // Let links and controls inside blocks work, unless explicitly panning.
     if (e.button === 0 && !spaceHeld && (e.target as HTMLElement).closest(INTERACTIVE)) return
     e.preventDefault()
@@ -584,11 +600,127 @@ export function Canvas({
     })
   }
 
+  // ---------- the Page full screen: the flow zooms smoothly into the Page, which becomes the UI ----------
+
+  const FULL_MS = 600
+  const [full, setFull] = useState<'off' | 'entering' | 'on' | 'leaving'>('off')
+  const [animating, setAnimating] = useState(false)
+  const saved = useRef<{ view: View; left: number; top: number } | null>(null)
+
+  /** The view that makes the Page (without its fake browser bar) fill the whole window. */
+  const pageView = (): View | null => {
+    const frame = worldRef.current?.querySelector<HTMLElement>('[data-block-id="page"]')
+    const pf = frame?.querySelector<HTMLElement>('.page-frame')
+    if (!frame || !pf) return null
+    const wx = frame.offsetLeft + pf.offsetLeft
+    const wy = frame.offsetTop + pf.offsetTop + PAGE_BAR_H
+    const w = PAGE_W
+    const h = PAGE_H - PAGE_BAR_H
+    const W = window.innerWidth
+    const H = window.innerHeight
+    const zoom = Math.min(W / w, H / h)
+    return { zoom, x: (W - w * zoom) / 2 - wx * zoom, y: (H - h * zoom) / 2 - wy * zoom }
+  }
+
+  // ---------- Edit layout: split the Page's boxes, drag their dividers, remove boxes ----------
+
+  const [layoutEdit, setLayoutEdit] = useState(false)
+  const pageBlock = pageOf(rawBlocks)
+  const layoutTree = parseLayout(pageBlock?.props.layout)
+  const layout = computeLayout(layoutTree)
+  const changeLayout = (next: LayoutNode) => onPageLayout?.(JSON.stringify(next))
+  const removeLayoutBox = (id: string) => {
+    // A widget in that box comes out of the Page first.
+    for (const b of rawBlocks) if (b.dock?.slot === id) onUndock(b.id)
+    changeLayout(removeBox(layoutTree, id))
+  }
+  const dragDivider = (d: Divider, e: PointerEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    const vp = viewportRef.current!.getBoundingClientRect()
+    const move = (ev: globalThis.PointerEvent) => {
+      if (!pageBlock) return
+      const wx = (ev.clientX - vp.left - view.x) / view.zoom - pageBlock.x
+      const wy = (ev.clientY - vp.top - view.y) / view.zoom - pageBlock.y
+      const at = d.dir === 'row' ? wx : wy
+      changeLayout(setRatio(parseLayout(pageOf(blocksRef.current)?.props.layout), d.id, (at - d.start) / d.span))
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  const enterFull = () => {
+    if (full !== 'off') return
+    setLayoutEdit(false)
+    const r = viewportRef.current!.getBoundingClientRect()
+    saved.current = { view, left: r.left, top: r.top }
+    setMenu(null)
+    onFullscreen?.(true)
+    // The canvas now covers the window: shift the view by where it was, so nothing jumps…
+    setFull('entering')
+    setView((v) => ({ ...v, x: v.x + r.left, y: v.y + r.top }))
+    // …then glide into the Page.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const target = pageView()
+        setAnimating(true)
+        if (target) setView(target)
+        setTimeout(() => {
+          setAnimating(false)
+          setFull('on')
+        }, FULL_MS)
+      }),
+    )
+  }
+
+  const exitFull = () => {
+    const s = saved.current
+    if (full !== 'on' || !s) return
+    setFull('leaving')
+    setAnimating(true)
+    setView({ ...s.view, x: s.view.x + s.left, y: s.view.y + s.top })
+    setTimeout(() => {
+      setAnimating(false)
+      setFull('off')
+      setView(s.view)
+      onFullscreen?.(false)
+    }, FULL_MS)
+  }
+
+  useEffect(() => onFullPhase?.(full), [full, onFullPhase])
+
+  // Esc (or the dashboard's Exit button) leaves the full screen; resizing keeps the Page filling it.
+  const fullRef = useRef({ full, exitFull, pageView })
+  fullRef.current = { full, exitFull, pageView }
+  useEffect(() => {
+    const leave = () => fullRef.current.full === 'on' && fullRef.current.exitFull()
+    window.addEventListener('dex:exit-full', leave)
+    return () => window.removeEventListener('dex:exit-full', leave)
+  }, [])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && fullRef.current.full === 'on' && fullRef.current.exitFull()
+    const onResize = () => {
+      if (fullRef.current.full !== 'on') return
+      const t = fullRef.current.pageView()
+      if (t) setView(t)
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [setView])
+
   const fitRef = useRef(fit)
   fitRef.current = fit
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.shiftKey && e.code === 'Digit1' && !document.activeElement?.matches('input, textarea, select')) fitRef.current()
+      if (e.shiftKey && e.code === 'Digit1' && fullRef.current.full === 'off' && !document.activeElement?.matches('input, textarea, select')) fitRef.current()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -630,7 +762,7 @@ export function Canvas({
   return (
     <div
       ref={viewportRef}
-      className={`canvas${editing ? '' : ' preview'}${dropTarget ? ' over' : ''}${panning ? ' panning' : spaceHeld ? ' can-pan' : ''}${
+      className={`canvas${editing ? '' : ' preview'}${full !== 'off' ? ' full' : ''}${full === 'entering' || full === 'on' ? ' full-ui' : ''}${dropTarget ? ' over' : ''}${panning ? ' panning' : spaceHeld ? ' can-pan' : ''}${
         wiring ? ` wiring from-${wiring.kind}` : ''
       }`}
       style={{ backgroundSize: `${grid}px ${grid}px`, backgroundPosition: `${view.x}px ${view.y}px` }}
@@ -641,7 +773,7 @@ export function Canvas({
       onPointerOver={onPointerOver}
       onPointerOut={onPointerOut}
     >
-      <div ref={worldRef} className="world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
+      <div ref={worldRef} className={`world${animating ? ' animating' : ''}`} style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}>
         <svg className="wires">
           {wirePaths.map(({ wire, d, color, fits }) => (
             <g
@@ -683,10 +815,44 @@ export function Canvas({
             onPortDown={onPortDown}
             onMove={onMove}
             onMenu={openMenu}
-            slot={b.dock ? slotById(b.dock.slot) : undefined}
+            slot={b.dock ? slotById(blocks, b.dock.slot) : undefined}
             onDragAt={onDragAt}
           />
         ))}
+        {layoutEdit && pageBlock && (
+          <div className="layout-edit" style={{ left: pageBlock.x, top: pageBlock.y, fontSize: Math.min(48, 13 / view.zoom) }}>
+            {layout.slots.map((s) => {
+              const inside = rawBlocks.find((b) => b.dock?.slot === s.id)
+              return (
+                <div key={s.id} className="layout-box" style={{ left: s.x, top: s.y, width: s.w, height: s.h }}>
+                  <div className="layout-tools" onPointerDown={(e) => e.stopPropagation()}>
+                    <button onClick={() => changeLayout(splitBox(layoutTree, s.id, 'row'))} title="Split into left and right">
+                      ⇆ Split
+                    </button>
+                    <button onClick={() => changeLayout(splitBox(layoutTree, s.id, 'col'))} title="Split into top and bottom">
+                      ⇅ Split
+                    </button>
+                    {layout.slots.length > 1 && (
+                      <button className="danger" onClick={() => removeLayoutBox(s.id)} title={inside ? `Remove the box (${blockByType[inside.type]?.label} comes out of the Page)` : 'Remove the box'}>
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                  {inside && <span className="layout-name">{blockByType[inside.type]?.label}</span>}
+                </div>
+              )
+            })}
+            {layout.dividers.map((d) => (
+              <div
+                key={d.id}
+                className={`layout-divider ${d.dir}`}
+                style={{ left: d.x, top: d.y, width: d.w, height: d.h }}
+                onPointerDown={(e) => dragDivider(d, e)}
+                title="Drag to resize"
+              />
+            ))}
+          </div>
+        )}
         {hoverSlot && page && (
           <div className="slot-hover" style={{ left: page.x + hoverSlot.x, top: page.y + hoverSlot.y, width: hoverSlot.w, height: hoverSlot.h }}>
             Drop to show it here
@@ -699,6 +865,29 @@ export function Canvas({
           <strong>This flow is empty</strong>
           <span>Drag a block from the left to start building</span>
         </div>
+      )}
+
+      {page && full === 'off' && editing && (
+        <button
+          className={`layout-btn${layoutEdit ? ' on' : ''}`}
+          style={{ left: (page.x + PAGE_W) * view.zoom + view.x - 140, top: page.y * view.zoom + view.y - 38 }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => setLayoutEdit((v) => !v)}
+          title={layoutEdit ? 'Finish editing the layout' : 'Split, resize and remove the Page’s boxes'}
+        >
+          {layoutEdit ? '✓ Done layout' : '▦ Edit layout'}
+        </button>
+      )}
+      {page && full !== 'on' && (
+        <button
+          className={`full-btn${full === 'off' ? '' : ' in-full'}`}
+          style={full === 'off' ? { left: (page.x + PAGE_W) * view.zoom + view.x, top: page.y * view.zoom + view.y - 38 } : undefined}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => (full === 'off' ? enterFull() : exitFull())}
+          title={full === 'off' ? 'Show the Page full screen — the UI' : 'Back to the flow (Esc)'}
+        >
+          {full === 'off' ? '⤢ Full screen' : '⤡ Exit full screen'}
+        </button>
       )}
 
       <div className="zoom-controls" onPointerDown={(e) => e.stopPropagation()}>

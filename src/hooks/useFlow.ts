@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { blockByType } from '../blocks/registry'
 import type { BlockInstance, BlockProps, PortRef, Wire } from '../blocks/types'
 import { patch, type Snapshot, type Step } from '../core/history'
-import { PAGE_W, pageOf, placeDocked, slotById } from '../core/pageLayout'
+import { DEFAULT_LAYOUT, LEGACY_IDS, LEGACY_LAYOUT, PAGE_W, pageOf, placeDocked, slotById } from '../core/pageLayout'
 import { compatible } from '../core/dataTypes'
 import { findPort, portsOf, wireFits } from '../core/ports'
 
@@ -142,17 +142,63 @@ function legacyPage(): Partial<FlowFile> | undefined {
 const REPLACED_TYPES: Record<string, string> = { bang: 'clock' }
 
 function sanitize(flow: FlowFile): FlowFile {
+  // The Watchlist block became the Feed's watchlist: its tokens move there (see below).
+  const oldWatch: unknown[] = []
+  for (const b of flow.blocks ?? [])
+    if (b.type === 'watchlist')
+      try {
+        oldWatch.push(...JSON.parse(String(b.props.tokens || '[]')))
+      } catch {
+        /* nothing to keep */
+      }
   const blocks = (flow.blocks ?? [])
     .map((b) => {
       const to = REPLACED_TYPES[b.type]
       return to && blockByType[to] ? { ...b, type: to, props: { ...blockByType[to].defaultProps } } : b
     })
     .filter((b) => blockByType[b.type])
-  // Permanent blocks (the Page) are in every flow: add any that's missing, to the right of everything else.
-  for (const def of Object.values(blockByType).filter((d) => d.permanent && !blocks.some((b) => b.type === d.type))) {
-    const right = blocks.length ? Math.max(...blocks.map((b) => b.x)) + 560 : 600
-    const top = blocks.length ? Math.min(...blocks.map((b) => b.y)) : 0
-    blocks.push({ id: def.type, type: def.type, props: { ...def.defaultProps }, x: right, y: top })
+    // Settings a block gained since it was saved start at their defaults (not blank).
+    .map((b) => ({ ...b, props: { ...blockByType[b.type].defaultProps, ...b.props } }))
+  // Permanent blocks (the Feed, Token details, Page) are in every flow, once: an extra copy is
+  // dropped (its wires go with it, below), and a missing one is added where it belongs — the Feed top left
+  // with Token details beside it, the Page to the right of everything.
+  const others = blocks.filter((b) => !blockByType[b.type]?.permanent)
+  const x0 = others.length ? Math.min(...others.map((b) => b.x)) : 0
+  const y0 = others.length ? Math.min(...others.map((b) => b.y)) : 0
+  const HOME: Record<string, { x: number; y: number }> = {
+    feed: { x: x0 - 1000, y: y0 },
+    tokenDetails: { x: x0 - 580, y: y0 },
+  }
+  for (const def of Object.values(blockByType).filter((d) => d.permanent)) {
+    const copies = blocks.filter((b) => b.type === def.type)
+    for (const extra of copies.slice(1)) blocks.splice(blocks.indexOf(extra), 1)
+    if (copies.length || def.type === 'page') continue
+    const at = HOME[def.type] ?? { x: x0 - 580, y: y0 + 600 }
+    blocks.push({ id: def.type, type: def.type, props: { ...def.defaultProps }, x: at.x, y: at.y })
+  }
+  if (oldWatch.length) {
+    const feedBlock = blocks.find((b) => b.type === 'feed')
+    if (feedBlock) {
+      let watch: { id?: string }[] = []
+      try {
+        watch = JSON.parse(String(feedBlock.props.watch || '[]'))
+      } catch {
+        /* start fresh */
+      }
+      for (const t of oldWatch as { id?: string }[]) if (t?.id && !watch.some((w) => w.id === t.id)) watch.push(t)
+      feedBlock.props = { ...feedBlock.props, watch: JSON.stringify(watch) }
+    }
+  }
+  const pageDef = blockByType.page
+  if (pageDef && !blocks.some((b) => b.type === 'page')) {
+    const right = Math.max(...blocks.map((b) => b.x + (blockByType[b.type]?.width ?? 400)), 0) + 160
+    blocks.push({ id: 'page', type: 'page', props: { ...pageDef.defaultProps }, x: right, y: y0 })
+  }
+  // The Page's layout: older flows that dock into the fixed boxes get them as a layout; a new Page has one box.
+  const pageBlock = blocks.find((b) => b.type === 'page')
+  if (pageBlock && !pageBlock.props.layout) {
+    const legacy = blocks.some((b) => b.dock && LEGACY_IDS.includes(b.dock.slot))
+    pageBlock.props = { ...pageBlock.props, layout: JSON.stringify(legacy ? LEGACY_LAYOUT : DEFAULT_LAYOUT) }
   }
   // Page boxes: a fixed widget (the token selector) is always in its box; any other docked block must be
   // dockable, in a box that exists, and alone there.
@@ -164,7 +210,7 @@ function sanitize(flow: FlowFile): FlowFile {
   for (const b of blocks) {
     if (!b.dock) continue
     const def = blockByType[b.type]
-    const ok = slotById(b.dock.slot) && (def.dockedIn === b.dock.slot || (def.Widget && !taken.has(b.dock.slot) && b.dock.slot !== 'selector'))
+    const ok = slotById(blocks, b.dock.slot) && (def.dockedIn === b.dock.slot || (def.Widget && !taken.has(b.dock.slot)))
     if (ok) taken.add(b.dock.slot)
     else delete b.dock
   }
@@ -522,6 +568,7 @@ export function useFlow() {
 
   const add = async (type: string, x: number, y: number, preset: Partial<BlockProps> = {}) => {
     const def = blockByType[type]
+    if (def.permanent) return // the Page and the Feed are already there, once
     const props = await prepared(type, { ...def.defaultProps, ...preset } as BlockProps, 'add')
     const block: BlockInstance = { id: newId(), type, props, x: snap(x), y: snap(y) }
     record()

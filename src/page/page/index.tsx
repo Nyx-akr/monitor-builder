@@ -1,11 +1,12 @@
 import type { BlockDefinition } from '../../blocks/types'
-import { PAGE_BAR_H, PAGE_H, PAGE_HEAD, PAGE_W, SLOTS } from '../../core/pageLayout'
+import { PAGE_BAR_H, PAGE_H, PAGE_HEAD, PAGE_W, computeLayout, parseLayout } from '../../core/pageLayout'
 import './page.css'
 
-type Props = Record<string, never>
+type Props = { layout: string }
 
 /** The Page: a wireframe of the screen this flow drives. Its boxes hold widgets — docked blocks, drawn over them. */
-function PageBox() {
+function PageBox({ props }: { props: Props }) {
+  const { slots } = computeLayout(parseLayout(props.layout))
   return (
     <div className="page-frame" style={{ width: PAGE_W, height: PAGE_H }}>
       <div className="page-bar" style={{ height: PAGE_BAR_H }}>
@@ -19,9 +20,9 @@ function PageBox() {
         <div className="wf-line" style={{ width: '38%' }} />
         <div className="wf-line" style={{ width: '18%', marginLeft: 'auto' }} />
       </div>
-      {SLOTS.filter((s) => s.id !== 'selector').map((s) => (
+      {slots.map((s) => (
         <div key={s.id} className="wf page-slot" style={{ left: s.x, top: s.y, width: s.w, height: s.h }}>
-          <span>Drop a message box, dict or chart here</span>
+          <span>Drop a block here — Feed, Token details, Chart, Table… “Edit layout” splits the boxes.</span>
         </div>
       ))}
     </div>
@@ -36,9 +37,7 @@ export const page: BlockDefinition<Props> = {
   category: 'pages',
   permanent: true,
   width: PAGE_W,
-  defaultProps: {},
+  defaultProps: { layout: '' },
   settings: [],
-  // The token selector's input / output used to be on the Page itself.
-  movedPorts: { tokens: 'tokenSelector', token: 'tokenSelector' },
   Render: PageBox,
 }

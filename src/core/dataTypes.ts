@@ -1,63 +1,54 @@
-import type { Message, Port } from '../blocks/types'
-import { isHistory, isObject, isOhlcv, isToken } from './messages'
+import type { Port } from '../blocks/types'
+import type { Value } from './values'
 
 /**
- * What travels on a wire. Every port declares the types it takes (inlet) or sends (outlet), and only
- * compatible ports can be wired together — a bang outlet can't feed a string-only inlet.
+ * The types a port takes or gives — the kinds of value (see core/values). Only compatible ports connect:
+ * a Chart takes series or candles, a Market data block takes a token or a token list…
  */
-/**
- * 'table': structured data — rows of named values. One row is a dict (a token's details, a market summary,
- * an error, a Dict box); many rows are a list (Top 250, Trending, a Storage's history). Blocks take both.
- */
-/**
- * 'token': which token — always its chain and contract address, plus symbol, name, pool, logo (and a market
- * snapshot when a card sent it). Every block that works on a token takes one.
- * 'ohlcv': candles over time — dated rows with open / high / low / close / volume (GeckoTerminal, CoinGecko OHLC).
- * 'history': values over time — dated rows ({ at, data }), oldest first: a Storage's history, candles. Charts draw it.
- * A token is a one-row table and a history a many-row one, so anything taking a table takes them too.
- */
-export type DataType = 'bang' | 'string' | 'number' | 'table' | 'token' | 'history' | 'ohlcv' | 'any'
+export type DataType = 'token' | 'table' | 'number' | 'series' | 'candles' | 'report' | 'text' | 'bool' | 'clock' | 'any'
 
 export const TYPE_COLORS: Record<DataType, string> = {
-  bang: '#cbd5e1',
-  string: '#60a5fa',
-  number: '#2dd4bf',
-  table: '#a78bfa',
   token: '#facc15',
-  history: '#a3e635',
-  ohlcv: '#e879f9',
+  table: '#a78bfa',
+  number: '#2dd4bf',
+  series: '#a3e635',
+  candles: '#e879f9',
+  report: '#fb7185',
+  text: '#60a5fa',
+  bool: '#cbd5e1',
+  clock: '#38bdf8',
   any: '#8b93a7',
 }
 
 export const ERROR_COLOR = '#f97316'
 
+export const TYPE_LABELS: Record<DataType, string> = {
+  token: 'token',
+  table: 'table',
+  number: 'number',
+  series: 'series',
+  candles: 'candles',
+  report: 'report',
+  text: 'text',
+  bool: 'yes / no',
+  clock: 'clock',
+  any: 'anything',
+}
+
 export const typesOf = (port: Port | undefined): DataType[] => port?.types ?? ['any']
 
-/** The type of an actual message value. */
-export function typeOfMessage(msg: Message): DataType {
-  if (msg === 'bang') return 'bang'
-  if (typeof msg === 'number') return 'number'
-  if (typeof msg === 'string') return 'string'
-  if (isToken(msg)) return 'token'
-  if (isOhlcv(msg)) return 'ohlcv'
-  if (isHistory(msg)) return 'history'
-  if (Array.isArray(msg) || isObject(msg)) return 'table'
-  return 'any'
+export const typeOfValue = (v: Value | undefined): DataType | null => (v ? v.kind : null)
+
+/** Can an input taking `takes` receive a value of type `t`? */
+export function accepts(takes: DataType[], t: DataType): boolean {
+  return takes.includes('any') || takes.includes(t)
 }
 
-/** Can an inlet taking `accepts` receive a value of type `t`? */
-export function accepts(acceptsTypes: DataType[], t: DataType): boolean {
-  if (acceptsTypes.includes('any') || acceptsTypes.includes(t)) return true
-  // A token is a table with one (known) row, a history a table of dated rows.
-  return (t === 'token' || t === 'history' || t === 'ohlcv') && acceptsTypes.includes('table')
-}
-
-/** Can this outlet be wired to this inlet? An `any` outlet may connect anywhere; delivery then checks each message. */
+/** Can this output be wired to this input? An `any` output may connect anywhere. */
 export function compatible(outlet: Port | undefined, inlet: Port | undefined): boolean {
   const sends = typesOf(outlet)
-  const takes = typesOf(inlet)
   if (sends.includes('any')) return true
-  return sends.some((t) => accepts(takes, t))
+  return sends.some((t) => accepts(typesOf(inlet), t))
 }
 
 /** The colour a port / wire is drawn in: its single type, or neutral for mixed / any. */
@@ -67,21 +58,9 @@ export function portColor(port: Port | undefined): string {
   return t.length === 1 ? TYPE_COLORS[t[0]] : TYPE_COLORS.any
 }
 
-/** How a type is named in the UI — a bare trigger is just a "signal" to users (internally 'bang'). */
-export const TYPE_LABELS: Record<DataType, string> = {
-  bang: 'signal',
-  string: 'text',
-  number: 'number',
-  table: 'table',
-  token: 'token',
-  history: 'history',
-  ohlcv: 'OHLCV',
-  any: 'anything',
-}
-
 export const describeTypes = (port: Port | undefined) => typesOf(port).map((t) => TYPE_LABELS[t]).join(' · ')
 
-/** Port fill: one type = its colour; several types = equal stripes of each (e.g. text + info). */
+/** Port fill: one type = its colour; several = equal stripes of each. */
 export function portBackground(port: Port | undefined): string {
   if (port?.error) return ERROR_COLOR
   const t = typesOf(port).filter((x) => x !== 'any')

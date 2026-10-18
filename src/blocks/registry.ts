@@ -1,16 +1,26 @@
-import type { BlockDefinition } from './types'
-import { apiBlocks } from '../apis'
-import { objectBlocks } from '../objects'
+import type { BlockDefinition, Category } from './types'
+import { pickBlocks } from './pick'
+import { dataBlocks } from './data'
+import { calcBlocks } from './calc'
+import { showBlocks } from './show'
+import { detailsBlocks } from './show/details'
+import { ruleBlocks } from './rules'
 import { pageBlocks } from '../page'
 
 /**
- * Every block the editor knows: APIs (src/apis), objects (src/objects) and the Page (src/page). Each
- * folder's index.ts lists its blocks; the palette shows them grouped by category, A–Z.
+ * Every block, by what a trader wants to do: Pick tokens → get Data about them → Calculate → Show → Rules.
+ * Each group's file lists its blocks; the palette shows them in this order.
  */
-const ORDER: BlockDefinition['category'][] = ['apis', 'objects', 'pages']
+export const CATEGORY_ORDER: Category[] = ['pick', 'data', 'calc', 'show', 'rules', 'pages']
+export const CATEGORY_LABELS: Record<Category, string> = {
+  pick: 'Pick',
+  data: 'Data',
+  calc: 'Calculate',
+  show: 'Show',
+  rules: 'Rules',
+  pages: 'Page',
+}
 
-export const blocks: BlockDefinition<any>[] = [...apiBlocks, ...objectBlocks, ...pageBlocks].sort((a, b) =>
-  a.category === b.category ? a.label.localeCompare(b.label) : ORDER.indexOf(a.category) - ORDER.indexOf(b.category),
-)
+export const blocks: BlockDefinition<any>[] = [...pickBlocks, ...dataBlocks, ...calcBlocks, ...showBlocks, ...detailsBlocks, ...ruleBlocks, ...pageBlocks]
 
 export const blockByType = Object.fromEntries(blocks.map((b) => [b.type, b])) as Record<string, BlockDefinition<any>>
