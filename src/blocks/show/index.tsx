@@ -1,4 +1,6 @@
 import type { BlockContext, BlockDefinition, BlockProps } from '../types'
+import type { DataType } from '../../core/dataTypes'
+import { useDashTimeframe } from '../../core/dashTimeframe'
 import { metricByKey, metricOptions } from '../../core/metrics'
 import { formatValue } from '../../core/show'
 import { CANDLE_SIZES, ChartView, DEFAULT_TIMEFRAME, STYLES, TIMEFRAMES, type ChartLine, type ChartStyle, type Point } from '../../charts'
@@ -26,15 +28,19 @@ function chartLines(ctx: BlockContext<ChartProps>, n: number): ChartLine[] {
 
 function ChartBlock({ props, ctx, big }: { props: ChartProps; ctx: BlockContext<ChartProps>; big?: boolean }) {
   const lines = chartLines(ctx, lineCount(props))
+  // On the dashboard, its navbar timeframe (when set) wins over the chart's own.
+  const dashTf = useDashTimeframe()
+  const timeframe = big && dashTf ? dashTf : props.timeframe
   return (
     <ChartView
       lines={lines}
       style={(STYLES.some((s) => s.value === props.style) ? props.style : 'line') as ChartStyle}
-      timeframe={props.timeframe}
+      timeframe={timeframe}
       asPercent={props.scale === 'percent'}
       candleSize={props.candle}
       big={big}
       onTimeframe={(value) => ctx.update({ timeframe: value })}
+      marks={ctx.inputs.marks?.kind === 'marks' ? ctx.inputs.marks.marks : []}
       emptyText={lines.some((l) => l.points.length) ? 'Nothing in this timeframe — pick a longer one' : 'Wire candles or a series in (Candles, History, Math, Moving average…)'}
     />
   )
@@ -64,7 +70,10 @@ export const chart: BlockDefinition<ChartProps> = {
     { key: 'lines', label: 'Inputs', type: 'number', min: 1, max: 4, help: 'How many lines (1–4), each with its own colour.' },
   ],
   ports: (props) => ({
-    inlets: Array.from({ length: lineCount(props) }, (_, i) => ({ id: `in${i + 1}`, label: `Line ${i + 1}: candles or a series`, types: ['candles', 'series'] })),
+    inlets: [
+      ...Array.from({ length: lineCount(props) }, (_, i) => ({ id: `in${i + 1}`, label: `Line ${i + 1}: candles or a series`, types: ['candles', 'series'] as DataType[] })),
+      { id: 'marks', label: 'Marks: moments to flag on the chart (e.g. Token details’ BUY / SELL calls)', types: ['marks'] as DataType[] },
+    ],
   }),
   outlets: [],
   Render: (p) => <ChartBlock {...p} />,

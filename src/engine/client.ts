@@ -133,7 +133,9 @@ function listen() {
     for (const key of active) {
       const e = entries.get(key)
       if (!e) continue
-      if (e.q.kind === 'feed' || (e.q.kind === 'history' && ids.has(String(e.q.params.id)))) void load(key, e)
+      // After the rotation engine (or the grading) ran, its views refresh too.
+      const engineView = (ev.source === 'rotation' || ev.source === 'grading') && (e.q.kind === 'rotation' || e.q.kind === 'rotation/market' || e.q.kind === 'evaluation')
+      if (e.q.kind === 'feed' || engineView || (e.q.kind === 'history' && ids.has(String(e.q.params.id)))) void load(key, e)
     }
   }
   // EventSource reconnects by itself after the dev server restarts.

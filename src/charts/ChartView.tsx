@@ -25,6 +25,8 @@ export interface ChartViewProps {
   emptyText: string
   /** Given: the timeframe is a dropdown at the top right, so it can be changed right on the chart. */
   onTimeframe?: (value: string) => void
+  /** Moments to mark (e.g. the rotation engine's BUY / SELL calls): a line and a label at each time. */
+  marks?: { t: number; label: string; tone: string; why?: string }[]
 }
 
 // The plot is drawn in a 1000 × 400 box and stretched to fit; labels are HTML so they don't stretch.
@@ -41,7 +43,7 @@ function useNow(everyMs = 5000) {
   return now
 }
 
-export function ChartView({ lines, style, timeframe, asPercent, candleSize, big, emptyText, onTimeframe }: ChartViewProps) {
+export function ChartView({ lines, style, timeframe, asPercent, candleSize, big, emptyText, onTimeframe, marks = [] }: ChartViewProps) {
   const now = useNow()
   const tf = timeframeOf(timeframe)
   const from = now - tf.ms
@@ -126,6 +128,14 @@ export function ChartView({ lines, style, timeframe, asPercent, candleSize, big,
                 ? candles.map((cs, i) => <Candles key={withData[i].key} candles={cs} index={i} count={withData.length} color={withData[i].color} period={period} x={x} y={y} />)
                 : drawn.map((l) => <Line key={l.key} line={l} area={style === 'area'} x={x} y={y} />)}
             </svg>
+            {/* Marks: HTML over the plot, so their labels keep their shape whatever the stretch. */}
+            {marks
+              .filter((m) => m.t >= tStart && m.t <= tEnd)
+              .map((m, i) => (
+                <span key={i} className={`chart-mark ${m.tone}`} style={{ left: `${(x(m.t) / W) * 100}%` }} title={`${m.label} · ${new Date(m.t).toLocaleString()}${m.why ? ` — ${m.why}` : ''}`}>
+                  <b>{m.label}</b>
+                </span>
+              ))}
             <span className="chart-y top">{formatValue(v1 - pad, asPercent)}</span>
             <span className="chart-y bottom">{formatValue(v0 + pad, asPercent)}</span>
           </>

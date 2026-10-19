@@ -163,11 +163,14 @@ export const filter: BlockDefinition<FilterProps> = {
   defaultProps: { col1: 'liquidity', op1: '>', val1: '50000', col2: '', op2: '>', val2: '', col3: '', op3: '>', val3: '' },
   settings: [],
   settingsFor: (_p, inputs) => {
-    const cols = [{ value: '', label: '— not used —' }, ...columnOptions(inputs.in), { value: 'chain', label: 'Chain' }, { value: 'symbol', label: 'Symbol' }]
+    // Text columns too (e.g. the rotation engine's phase and call: "call = BUY").
+    const t = asTable(inputs.in)
+    const text = t ? t.columns.filter((c) => c.key !== 'symbol' && t.rows.some((r) => typeof r[c.key] === 'string')).map((c) => ({ value: c.key, label: `${c.label} (text)` })) : []
+    const cols = [{ value: '', label: '— not used —' }, ...columnOptions(inputs.in), ...text, { value: 'chain', label: 'Chain' }, { value: 'symbol', label: 'Symbol' }]
     return [1, 2, 3].flatMap((i): SettingField[] => [
       { key: `col${i}`, label: `Condition ${i}`, type: 'select', options: cols },
       { key: `op${i}`, label: 'is', type: 'select', options: OPS },
-      { key: `val${i}`, label: 'value', type: 'text', placeholder: 'e.g. 50000, 50k, 1.2M, 5, solana', help: i === 1 ? 'Rows matching every condition are kept. Money in dollars, changes in %, age in hours.' : undefined },
+      { key: `val${i}`, label: 'value', type: 'text', placeholder: 'e.g. 50000, 50k, 1.2M, 5, solana, BUY', help: i === 1 ? 'Rows matching every condition are kept. Money in dollars, changes in %, age in hours; text with = or ≠ (call = BUY).' : undefined },
     ])
   },
   inlets: [TABLE_IN('in', 'A token list (or any table)')],

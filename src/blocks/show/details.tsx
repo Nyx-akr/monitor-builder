@@ -1,9 +1,10 @@
 import { useEffect } from 'react'
-import type { BlockContext, BlockDefinition, BlockProps } from '../types'
-import type { Column, Row, TableValue, Token, Value } from '../../core/values'
+import type { BlockContext, BlockDefinition, BlockProps, Query } from '../types'
+import { num, type Column, type MarksValue, type Row, type TableValue, type Token, type Value } from '../../core/values'
 import { formatValue } from '../../core/show'
 import { DETAIL_FIELDS, SOURCE_NAMES, type DetailField, type DetailSource, type DetailsAnswer } from '../../core/tokenDetails'
 import { DataStatus, Empty, TokenLine, trackTokens } from '../shared'
+import { CallBadge, PhaseBadge } from '../engine'
 import { useFeedSelected } from '../pick'
 
 /*
@@ -55,6 +56,132 @@ const show = (f: DetailField, v: number | string) =>
           ? `${v.toFixed(Math.abs(v) < 10 ? 2 : 1)}%`
           : formatValue(v, f.unit === 'text' ? 'none' : f.unit)
 
+// ---------- the rotation engine's read of this token (server/rotation.ts) ----------
+
+interface RotationEval {
+  engine: string
+  phase: { phase: string | null; why: string }
+  calls: Record<string, { call: string | null; why: string; held?: boolean }>
+  scores: Record<string, { score: number | null; why: string }>
+  rotation: { inWallets: number; outWallets: number; inUsd: number; outUsd: number } | null
+  market: { inUsd: number; outUsd: number; net: number; connected: number } | null
+  peers: { pool: string; symbol: string; inUsd: number; outUsd: number; wallets: number }[]
+  gates: { key: string; label: string; ok: boolean | null; detail: string }[]
+  smart: { buyers: number | null; sellers: number | null }
+  costPct: number | null
+  plan: { entry: number; target: number; stop: number; targetPct: number; stopPct: number; holdHours: number; sizeUsd: number } | null
+  at: number
+}
+interface CallLogEntry {
+  at: number
+  engine: string
+  call: string
+  why: string
+}
+
+const ENGINE_LABELS: Record<string, string> = {
+  quality: 'QUALITY',
+  rotation: 'ROTATION',
+  rotationPlus: 'ROT+',
+  rotationMidLiq: 'MID-LIQ',
+  smartRotation: 'SMART ROT',
+  tide: 'TIDE',
+  cycle: 'CYCLE',
+  momentum: 'MOMENTUM',
+  smart: 'SMART',
+  flow: 'FLOW',
+  blend: 'BLEND',
+  consensus: 'CONSENSUS',
+}
+
+function RotationSection({ ev, symbol }: { ev: RotationEval | null | undefined; symbol: string }) {
+  if (ev === undefined) return null
+  if (!ev)
+    return (
+      <div className="dt-group">
+        <div className="dt-title">Rotation</div>
+        <div className="bx-note">Not on the trade tape yet — the tape samples each chain’s busiest pools and your watchlist (star it to have it sampled).</div>
+      </div>
+    )
+  const call = ev.calls[ev.engine]
+  const top = ev.peers[0]
+  const lead = !ev.market
+    ? 'Too few trades in the last 2 h to measure rotation.'
+    : !ev.market.connected
+      ? `No wallet that traded ${symbol} also traded another sampled pool in the last 2 h — its crowd is its own.`
+      : !top
+        ? `${symbol} shares wallets with ${ev.market.connected} other pool${ev.market.connected === 1 ? '' : 's'}, but none sold one side and bought the other: parallel positions, not rotation.`
+        : top.inUsd >= top.outUsd
+          ? `${top.wallets} wallet${top.wallets === 1 ? '' : 's'} moved ${formatValue(top.inUsd, 'usd')} out of ${top.symbol} into ${symbol} — the strongest path in the last 2 h.`
+          : `${top.wallets} wallet${top.wallets === 1 ? '' : 's'} moved ${formatValue(top.outUsd, 'usd')} out of ${symbol} into ${top.symbol} — the strongest path in the last 2 h.`
+  const max = Math.max(1, ...ev.peers.map((p) => Math.max(p.inUsd, p.outUsd)))
+  return (
+    <div className="dt-group">
+      <div className="dt-title">Rotation · {ENGINE_LABELS[ev.engine] ?? ev.engine}</div>
+      <div className="rt-lead">
+        <CallBadge call={call?.call} /> <PhaseBadge phase={ev.phase.phase} /> {call?.why}
+      </div>
+      <div className="rt-lead dim">{lead}</div>
+      <div className="dt-grid">
+        <div className="dt-cell">
+          <span className="dt-label">Score</span>
+          <b className="dt-value">{ev.scores[ev.engine]?.score ?? '—'}</b>
+          <small title={ev.scores[ev.engine]?.why}>{ev.scores[ev.engine]?.why}</small>
+        </div>
+        <div className="dt-cell">
+          <span className="dt-label">Rotating in / out 1h</span>
+          <b className="dt-value">{ev.rotation ? `${ev.rotation.inWallets} / ${ev.rotation.outWallets}` : '—'}</b>
+          <small>{ev.rotation ? `net ${formatValue(ev.rotation.inUsd - ev.rotation.outUsd, 'usd')}` : 'under 15 min of tape'}</small>
+        </div>
+        <div className="dt-cell">
+          <span className="dt-label">Market flow 2h</span>
+          <b className={`dt-value ${ev.market ? (ev.market.net >= 0 ? 'up' : 'down') : ''}`}>{ev.market ? formatValue(ev.market.net, 'usd') : '—'}</b>
+          <small>{ev.market ? `${ev.market.connected} connected pools` : ''}</small>
+        </div>
+        <div className="dt-cell">
+          <span className="dt-label">Smart wallets 1h</span>
+          <b className="dt-value">{ev.smart.buyers != null ? `${ev.smart.buyers} / ${ev.smart.sellers ?? 0}` : '—'}</b>
+          <small>buying / selling</small>
+        </div>
+        <div className="dt-cell">
+          <span className="dt-label">Round trip $1K</span>
+          <b className="dt-value">{ev.costPct != null ? `${ev.costPct.toFixed(1)}%` : '—'}</b>
+          <small>impact + fees</small>
+        </div>
+      </div>
+      <div className="rt-calls">
+        {Object.entries(ev.calls).map(([k, c]) => (
+          <span key={k} title={c.why}>
+            {ENGINE_LABELS[k] ?? k} <CallBadge call={c.call} />
+          </span>
+        ))}
+      </div>
+      <div className="rt-gates">
+        {ev.gates.map((g) => (
+          <span key={g.key} className={g.ok === false ? 'down' : g.ok ? 'up' : 'dim'} title={g.detail}>
+            {g.ok === false ? '✕' : g.ok ? '✓' : '·'} {g.label}
+          </span>
+        ))}
+      </div>
+      {ev.peers.slice(0, 6).map((p) => (
+        <div key={p.pool} className="rt-peer" title={`${p.wallets} shared wallets`}>
+          <span className="sym">{p.symbol}</span>
+          <div className="eg-bar">
+            <div className="neg">{p.outUsd > 0 && <i style={{ width: `${(p.outUsd / max) * 100}%` }} />}</div>
+            <div className="pos">{p.inUsd > 0 && <i style={{ width: `${(p.inUsd / max) * 100}%` }} />}</div>
+          </div>
+          <b className={p.inUsd >= p.outUsd ? 'up' : 'down'}>{p.inUsd >= p.outUsd ? '+' : '−'}{formatValue(Math.abs(p.inUsd - p.outUsd), 'usd')}</b>
+        </div>
+      ))}
+      {ev.plan && (
+        <div className="rt-plan">
+          Trade plan: buy {formatValue(ev.plan.sizeUsd, 'usd')} at {formatValue(ev.plan.entry, 'usd')} · target {formatValue(ev.plan.target, 'usd')} (+{ev.plan.targetPct}%) · stop {formatValue(ev.plan.stop, 'usd')} (−{ev.plan.stopPct}%) · close after {ev.plan.holdHours} h
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DetailsView({ props, ctx, big }: { props: Props; ctx: BlockContext<Props>; big?: boolean }) {
   // Follow the Feed's selection when nothing is wired in (kept in the block, so it survives a reload).
   const selected = useFeedSelected()
@@ -80,6 +207,7 @@ function DetailsView({ props, ctx, big }: { props: Props; ctx: BlockContext<Prop
         <DataStatus states={ctx.data} />
       </div>
       <div className="bx-body">
+        {token && <RotationSection ev={ctx.data[1]?.data as RotationEval | null | undefined} symbol={token.symbol} />}
         {!token ? (
           <Empty>Click a token in the Feed (or wire a token in) to see its details.</Empty>
         ) : (
@@ -185,10 +313,18 @@ export const tokenDetails: BlockDefinition<Props> = {
   outlets: [
     { id: 'details', label: 'The shown details as a one-row table (one column per field)', types: ['table'] },
     { id: 'token', label: 'The token shown', types: ['token'] },
+    { id: 'calls', label: 'The rotation engine’s calls on this token, as chart marks (BUY / SELL…)', types: ['marks'] },
+    { id: 'score', label: 'The chosen engine’s score (0–100)', types: ['number'] },
   ],
-  query: (props, inputs) => {
+  query: (props, inputs): Query[] | null => {
     const t = tokenOf(props, inputs)
-    return t ? { kind: 'details', params: { id: t.id, ...(t.pool ? { pool: t.pool } : {}) }, refreshMs: 30_000 } : null
+    return t
+      ? [
+          { kind: 'details', params: { id: t.id, ...(t.pool ? { pool: t.pool } : {}) }, refreshMs: 30_000 },
+          { kind: 'rotation', params: { id: t.id }, refreshMs: 60_000 },
+          { kind: 'evaluation', params: { id: t.id, n: 200 }, refreshMs: 120_000 },
+        ]
+      : null
   },
   compute: ({ props, inputs, data }) => {
     const t = tokenOf(props, inputs)
@@ -200,7 +336,19 @@ export const tokenDetails: BlockDefinition<Props> = {
     for (const f of fields) row[f.key] = pick(answer, props, f)?.value ?? null
     const columns: Column[] = fields.map((f) => ({ key: f.key, label: f.label, unit: f.unit === 'text' ? 'none' : f.unit }))
     const table: TableValue = { kind: 'table', columns, rows: [row] }
-    return { details: table, token: t }
+    const ev = data[1]?.data as RotationEval | null | undefined
+    const log = (data[2]?.data as { recent?: CallLogEntry[] } | undefined)?.recent ?? []
+    const engine = ev?.engine
+    const marks: MarksValue = {
+      kind: 'marks',
+      label: `${t.symbol} calls`,
+      marks: log
+        .filter((c) => c.engine === (engine ?? 'quality') && c.call !== 'WATCH')
+        .map((c) => ({ t: c.at, label: c.call, tone: c.call === 'BUY' ? 'buy' : c.call === 'SELL' ? 'sell' : 'avoid', why: c.why }) as MarksValue['marks'][number])
+        .reverse(),
+    }
+    const score = ev && engine ? ev.scores[engine]?.score ?? null : null
+    return { details: table, token: t, calls: marks, score: num(score, 'none', `${t.symbol} ${engine ?? ''} score`.trim()) }
   },
   Info: DetailsInfo,
   Render: (p) => <DetailsView {...p} />,

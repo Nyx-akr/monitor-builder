@@ -27,7 +27,7 @@ export interface Port {
 
 /** Data a block needs from the engine (the server): what, with which parameters, and how fresh. */
 export interface Query {
-  kind: 'search' | 'market' | 'feed' | 'candles' | 'safety' | 'history' | 'details'
+  kind: 'search' | 'market' | 'feed' | 'candles' | 'safety' | 'history' | 'details' | 'rotation' | 'rotation/market' | 'evaluation' | 'smart' | 'trades'
   params: Record<string, string | number>
   /** Ask again this often while the block is on the canvas (ms). */
   refreshMs?: number
@@ -63,7 +63,7 @@ export interface ComputeArgs<P extends BlockProps = BlockProps> {
   data: QueryState[]
 }
 
-export type Category = 'pick' | 'data' | 'calc' | 'show' | 'rules' | 'pages'
+export type Category = 'pick' | 'data' | 'calc' | 'engine' | 'show' | 'rules' | 'pages'
 
 export interface BlockDefinition<P extends BlockProps = BlockProps> {
   type: string

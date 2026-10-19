@@ -1,0 +1,38 @@
+/* The rotation engine's blocks: call and phase badges, coverage, market rotation bars. */
+.eg-call, .eg-phase { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; border: 1px solid transparent; }
+.eg-call.buy { background: rgba(34, 197, 94, 0.18); color: #4ade80; border-color: rgba(74, 222, 128, 0.5); }
+.eg-call.sell { background: rgba(239, 68, 68, 0.16); color: #f87171; border-color: rgba(248, 113, 113, 0.5); }
+.eg-call.avoid { background: rgba(249, 115, 22, 0.14); color: #fb923c; }
+.eg-call.watch, .eg-call.none { background: var(--raised); color: var(--muted); }
+.eg-phase.waking { color: #60a5fa; }
+.eg-phase.running { color: #4ade80; }
+.eg-phase.peaking { color: #f87171; }
+.eg-phase.fading { color: #fb923c; }
+.eg-phase.quiet, .eg-phase.none { color: var(--muted); }
+.eg-phase { padding: 0; font-size: 10px; }
+.eg-coverage { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 10.5px; color: var(--muted); margin-bottom: 6px; }
+.eg-coverage b { color: var(--text); }
+.eg-board td { vertical-align: middle; }
+.eg-chain { margin-bottom: 12px; }
+.eg-movers { display: flex; flex-direction: column; gap: 3px; }
+.eg-mover { display: grid; grid-template-columns: 90px 1fr 70px; align-items: center; gap: 8px; font-size: 11.5px; cursor: pointer; }
+.eg-mover b { text-align: right; font-variant-numeric: tabular-nums; }
+.eg-bar { display: flex; height: 8px; }
+.eg-bar > div { width: 50%; display: flex; }
+.eg-bar .neg { justify-content: flex-end; border-right: 1px solid var(--line); }
+.eg-bar .neg i { background: linear-gradient(90deg, rgba(248, 113, 113, 0.35), #f87171); border-radius: 2px 0 0 2px; }
+.eg-bar .pos i { background: linear-gradient(90deg, #4ade80, rgba(74, 222, 128, 0.35)); border-radius: 0 2px 2px 0; }
+.eg-flows { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.eg-flows b { color: var(--text); }
+/* Token details: the rotation section */
+.rt-lead { font-size: 12.5px; line-height: 1.45; margin: 2px 0 8px; }
+.rt-calls { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; }
+.rt-calls span { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--muted); }
+.rt-peer { display: grid; grid-template-columns: 90px 1fr 64px; align-items: center; gap: 8px; font-size: 11px; }
+.rt-gates { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; margin: 6px 0; }
+.rt-plan { font-size: 11.5px; padding: 6px 8px; border: 1px solid rgba(74, 222, 128, 0.4); border-radius: 7px; background: rgba(34, 197, 94, 0.08); margin-top: 6px; }
+/* Explanation panels (Evaluation, Market rotation) */
+.ex-panel .ex p, .ex-panel .ex li { font-size: 11.5px; line-height: 1.5; color: var(--text); margin: 0 0 4px; }
+.ex-panel .ex ol, .ex-panel .ex ul { margin: 0; padding-left: 16px; }
+.ex-panel .ex-cov li { color: var(--muted); font-size: 11px; }
+.eg-mover.sel { background: rgba(250, 204, 21, 0.12); border-radius: 4px; }

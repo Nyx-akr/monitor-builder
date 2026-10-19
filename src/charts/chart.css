@@ -26,3 +26,10 @@
 .chart-tf { display: inline-flex; align-items: center; gap: 4px; }
 .chart-tf-select { background: var(--raised); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; font: inherit; font-size: 11px; cursor: pointer; }
 .chart-box.big .chart-tf-select { font-size: 13px; padding: 4px 8px; }
+/* Marks: a call at a time (BUY / SELL…), a line down the plot with its label at the top. */
+.chart-mark { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed currentColor; pointer-events: auto; }
+.chart-mark b { position: absolute; top: 2px; left: 2px; font-size: 9px; font-weight: 700; padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, var(--card) 85%, transparent); white-space: nowrap; }
+.chart-mark.buy { color: #4ade80; }
+.chart-mark.sell { color: #f87171; }
+.chart-mark.avoid { color: #fb923c; }
+.chart-mark.watch { color: var(--muted); }

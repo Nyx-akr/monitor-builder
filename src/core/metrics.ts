@@ -64,6 +64,16 @@ export const METRICS: MetricDef[] = [
   { key: 'flowScore', label: 'Order flow score', unit: 'none', short: 'Flow sc.' },
   { key: 'executionCost', label: 'Round-trip cost $1K', unit: 'pct', short: 'Cost' },
   { key: 'aboveLow6h', label: 'Above 6h low', unit: 'pct', short: '↑6h low' },
+  { key: 'cycleScore', label: 'EARLY (cycle) score', unit: 'none', short: 'Early' },
+  { key: 'smartScore', label: 'Smart money score', unit: 'none', short: 'Smart' },
+  { key: 'smartBuyers1h', label: 'Smart buyers 1h', unit: 'count', short: 'Smart b.' },
+  { key: 'smartSellers1h', label: 'Smart sellers 1h', unit: 'count', short: 'Smart s.' },
+  { key: 'blendScore', label: 'Blend score', unit: 'none', short: 'Blend' },
+  { key: 'consensusScore', label: 'Consensus score', unit: 'none', short: 'Consensus' },
+  { key: 'rotationMidLiqScore', label: 'Rotation mid-liq score', unit: 'none', short: 'Rot mid' },
+  { key: 'smartRotationScore', label: 'Smart rotation score', unit: 'none', short: 'Smart rot' },
+  { key: 'freezable', label: 'Freeze authority on (1 = yes)', unit: 'none', short: 'Freeze' },
+  { key: 'sellRoute', label: 'Sell route (1 = yes)', unit: 'none', short: 'Sell route' },
 ]
 
 /** Text values some rows carry (the rotation engine's phase and call). */

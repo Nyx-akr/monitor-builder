@@ -5,7 +5,7 @@ import type { Value } from './values'
  * The types a port takes or gives — the kinds of value (see core/values). Only compatible ports connect:
  * a Chart takes series or candles, a Market data block takes a token or a token list…
  */
-export type DataType = 'token' | 'table' | 'number' | 'series' | 'candles' | 'report' | 'text' | 'bool' | 'clock' | 'any'
+export type DataType = 'token' | 'table' | 'number' | 'series' | 'candles' | 'report' | 'text' | 'bool' | 'clock' | 'marks' | 'any'
 
 export const TYPE_COLORS: Record<DataType, string> = {
   token: '#facc15',
@@ -17,6 +17,7 @@ export const TYPE_COLORS: Record<DataType, string> = {
   text: '#60a5fa',
   bool: '#cbd5e1',
   clock: '#38bdf8',
+  marks: '#f97316',
   any: '#8b93a7',
 }
 
@@ -32,6 +33,7 @@ export const TYPE_LABELS: Record<DataType, string> = {
   text: 'text',
   bool: 'yes / no',
   clock: 'clock',
+  marks: 'chart marks',
   any: 'anything',
 }
 

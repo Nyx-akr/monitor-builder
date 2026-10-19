@@ -20,10 +20,12 @@ interface Fired {
 }
 let fired: Fired[] = []
 const listeners = new Set<() => void>()
-const pushAlert = (a: Fired, notify = true) => {
+const pushAlert = (a: Fired, notify = true, telegram = false) => {
   fired = [a, ...fired].slice(0, 200)
   listeners.forEach((l) => l())
   if (notify && typeof Notification !== 'undefined' && Notification.permission === 'granted') new Notification(a.title, { body: a.text })
+  // Telegram goes through the server (it holds the bot token: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .env).
+  if (telegram) void fetch('/api/engine/notify', { method: 'POST', body: JSON.stringify({ title: a.title, text: a.text }) }).catch(() => {})
 }
 const useAlerts = () =>
   useSyncExternalStore(
@@ -33,17 +35,18 @@ const useAlerts = () =>
 
 // ---------- Alert ----------
 
-type AlertProps = { mode: string; threshold: string; title: string; notify: boolean }
+type AlertProps = { mode: string; threshold: string; title: string; notify: boolean; telegram: boolean; column: string; value: string }
 
 const MODES = [
   { value: 'above', label: 'Goes above' },
   { value: 'below', label: 'Goes below' },
   { value: 'moves', label: 'Moves by more than (%) since the last alert' },
   { value: 'newRows', label: 'A new token appears in the list' },
+  { value: 'becomes', label: 'A token’s value in the list becomes… (e.g. call becomes BUY)' },
 ]
 
 /** What each Alert saw last: its value, whether its condition held, and the tokens it has seen. */
-const memory = new Map<string, { value?: number | null; holds?: boolean; base?: number; seen?: Set<string> }>()
+const memory = new Map<string, { value?: number | null; holds?: boolean; base?: number; seen?: Set<string>; was?: Map<string, string> }>()
 
 function AlertView({ props, ctx }: { props: AlertProps; ctx: BlockContext<AlertProps> }) {
   const v = ctx.inputs.value?.kind === 'number' ? ctx.inputs.value : null
@@ -54,13 +57,25 @@ function AlertView({ props, ctx }: { props: AlertProps; ctx: BlockContext<AlertP
   useEffect(() => {
     const m = memory.get(ctx.id) ?? {}
     memory.set(ctx.id, m)
+    if (props.mode === 'becomes') {
+      if (!list || !props.column || !String(props.value).trim()) return
+      const want = String(props.value).trim().toLowerCase()
+      const now = new Map(list.rows.filter((r) => r.token).map((r) => [r.token!.id, String(r[props.column] ?? '').toLowerCase()]))
+      // The first list is the baseline: only a change TO the value fires, once per token.
+      if (m.was) {
+        const hits = list.rows.filter((r) => r.token && now.get(r.token.id) === want && m.was!.get(r.token.id) !== want)
+        if (hits.length) pushAlert({ at: Date.now(), title: name, text: `${props.column} → ${props.value}: ${hits.map((r) => r.token!.symbol).join(', ')}` }, props.notify, props.telegram)
+      }
+      m.was = now
+      return
+    }
     if (props.mode === 'newRows') {
       if (!list) return
       const ids = list.rows.map((r) => r.token?.id).filter((x): x is string => Boolean(x))
       if (!m.seen) return void (m.seen = new Set(ids)) // the first list is the baseline
       const fresh = list.rows.filter((r) => r.token && !m.seen!.has(r.token.id))
       fresh.forEach((r) => m.seen!.add(r.token!.id))
-      if (fresh.length) pushAlert({ at: Date.now(), title: name, text: `New: ${fresh.map((r) => r.token!.symbol).join(', ')}` }, props.notify)
+      if (fresh.length) pushAlert({ at: Date.now(), title: name, text: `New: ${fresh.map((r) => r.token!.symbol).join(', ')}` }, props.notify, props.telegram)
       return
     }
     if (!v || v.value == null || limit == null) return
@@ -68,27 +83,29 @@ function AlertView({ props, ctx }: { props: AlertProps; ctx: BlockContext<AlertP
       if (m.base == null) return void (m.base = v.value)
       const move = m.base ? (v.value / m.base - 1) * 100 : 0
       if (Math.abs(move) >= Math.abs(limit)) {
-        pushAlert({ at: Date.now(), title: name, text: `${move >= 0 ? 'Up' : 'Down'} ${formatValue(Math.abs(move), 'pct').replace('+', '')} to ${formatValue(v.value, v.unit)}` }, props.notify)
+        pushAlert({ at: Date.now(), title: name, text: `${move >= 0 ? 'Up' : 'Down'} ${formatValue(Math.abs(move), 'pct').replace('+', '')} to ${formatValue(v.value, v.unit)}` }, props.notify, props.telegram)
         m.base = v.value
       }
       return
     }
     const holds = props.mode === 'below' ? v.value < limit : v.value > limit
     // Fires on the change from "not" to "yes" — not again while it stays true.
-    if (holds && m.holds === false) pushAlert({ at: Date.now(), title: name, text: `${props.mode === 'below' ? 'Below' : 'Above'} ${props.threshold}: now ${formatValue(v.value, v.unit)}` }, props.notify)
+    if (holds && m.holds === false) pushAlert({ at: Date.now(), title: name, text: `${props.mode === 'below' ? 'Below' : 'Above'} ${props.threshold}: now ${formatValue(v.value, v.unit)}` }, props.notify, props.telegram)
     m.holds = holds
     m.value = v.value
-  }, [v?.value, list, props.mode, limit, ctx.id, name, props.threshold, v?.unit, v, props.notify])
+  }, [v?.value, list, props.mode, limit, ctx.id, name, props.threshold, v?.unit, v, props.notify, props.telegram, props.column, props.value])
 
   const holdsNow = props.mode === 'below' ? (v?.value ?? Infinity) < (limit ?? -Infinity) : props.mode === 'above' ? (v?.value ?? -Infinity) > (limit ?? Infinity) : false
   return (
     <Box
       icon="🔔"
       title={name}
-      sub={`${MODES.find((m) => m.value === props.mode)?.label ?? props.mode}${props.mode !== 'newRows' ? ` ${props.threshold}` : ''}`}
+      sub={props.mode === 'becomes' ? `${props.column} becomes ${props.value}${props.telegram ? ' · Telegram' : ''}` : `${MODES.find((m) => m.value === props.mode)?.label ?? props.mode}${props.mode !== 'newRows' ? ` ${props.threshold}` : ''}${props.telegram ? ' · Telegram' : ''}`}
       status={<span className={`bx-status${holdsNow ? ' warn' : ''}`}>{holdsNow ? 'True now' : ''}</span>}
     >
-      {props.mode === 'newRows' ? (
+      {props.mode === 'becomes' ? (
+        list ? <div className="bx-sub">Watching {list.rows.length} tokens</div> : <Empty>Wire a list in (e.g. the Rotation board).</Empty>
+      ) : props.mode === 'newRows' ? (
         list ? <div className="bx-sub">Watching {list.rows.length} tokens</div> : <Empty>Wire a list in.</Empty>
       ) : v ? (
         <div className="bx-row">
@@ -108,16 +125,29 @@ export const alert: BlockDefinition<AlertProps> = {
   description: 'Fire when a value crosses a level, moves, or a new token appears',
   icon: '🔔',
   category: 'rules',
-  defaultProps: { mode: 'above', threshold: '0', title: '', notify: true },
-  settings: [
-    { key: 'title', label: 'Name', type: 'text', placeholder: 'e.g. BONK breakout' },
-    { key: 'mode', label: 'When the value…', type: 'select', options: MODES },
-    { key: 'threshold', label: 'Level / %', type: 'text', placeholder: 'e.g. 0.00003, 50k, 5', help: 'For “moves”: the % move that fires it.' },
-    { key: 'notify', label: 'Also show a browser notification', type: 'toggle' },
-  ],
+  defaultProps: { mode: 'above', threshold: '0', title: '', notify: true, telegram: false, column: 'call', value: 'BUY' },
+  settings: [],
+  settingsFor: (props, inputs) => {
+    const list = inputs.list?.kind === 'table' ? inputs.list : null
+    const columns = list ? list.columns.map((c) => ({ value: c.key, label: c.label })) : [{ value: 'call', label: 'Call' }, { value: 'phase', label: 'Phase' }]
+    return [
+      { key: 'title', label: 'Name', type: 'text', placeholder: 'e.g. Rotation BUY' },
+      { key: 'mode', label: 'When…', type: 'select', options: MODES },
+      ...(props.mode === 'becomes'
+        ? [
+            { key: 'column', label: 'Column', type: 'select' as const, options: columns },
+            { key: 'value', label: 'becomes', type: 'text' as const, placeholder: 'e.g. BUY', help: 'Fires once per token when its value changes to this (not again while it stays).' },
+          ]
+        : props.mode === 'newRows'
+          ? []
+          : [{ key: 'threshold', label: 'Level / %', type: 'text' as const, placeholder: 'e.g. 0.00003, 50k, 5', help: 'For “moves”: the % move that fires it.' }]),
+      { key: 'notify', label: 'Also show a browser notification', type: 'toggle' },
+      { key: 'telegram', label: 'Also send to Telegram', type: 'toggle', help: 'Needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env (then restart the dev server).' },
+    ]
+  },
   inlets: [
     { id: 'value', label: 'A number to watch', types: ['number'] },
-    { id: 'list', label: 'A list (for “a new token appears”)', types: ['table'] },
+    { id: 'list', label: 'A list (for “a new token appears” or “a value becomes…”, e.g. the Rotation board)', types: ['table'] },
   ],
   outlets: [{ id: 'holds', label: 'Whether the condition is true right now', types: ['bool'] }],
   compute: ({ props, inputs }) => {

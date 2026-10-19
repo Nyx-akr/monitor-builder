@@ -19,6 +19,8 @@ export interface TapeTrade {
   symbol: string
   kind: 'buy' | 'sell'
   usd: number
+  /** The token's USD price in this trade (GeckoTerminal's), when known. */
+  price?: number | null
   wallet: string
   tx: string
 }
@@ -47,17 +49,18 @@ export function createTape(dir: string) {
   }
 
   /** Add a pool's freshly sampled trades: new ones are kept, ones already held are skipped. */
-  function add(chain: string, p: { pool: string; token: string; symbol: string }, trades: TapeTrade[], at = Date.now()) {
+  /** Add a pool's freshly sampled trades; returns the ones that were new. */
+  function add(chain: string, p: { pool: string; token: string; symbol: string }, trades: TapeTrade[], at = Date.now()): TapeTrade[] {
     const pools = poolsOf(chain)
     const held = pools.get(p.pool) ?? { ...p, sampledAt: 0, trades: [] }
     const seen = new Set(held.trades.map((t) => `${t.tx}|${t.wallet}|${t.kind}`))
-    let added = 0
+    const added: TapeTrade[] = []
     for (const t of trades) {
       const k = `${t.tx}|${t.wallet}|${t.kind}`
       if (seen.has(k)) continue
       seen.add(k)
       held.trades.push(t)
-      added++
+      added.push(t)
     }
     held.trades.sort((a, b) => a.at - b.at)
     held.sampledAt = at

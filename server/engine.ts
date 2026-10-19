@@ -5,7 +5,9 @@ import type { Plugin } from 'vite'
 import { CHAINS, chainById } from '../src/services/chains'
 import { createCollector, type FetchContext, type SourceDef } from './collector'
 import { createTape, type TapeTrade } from './tape'
-import { DEFAULT_ENGINE, ENGINES, RULES, evaluate, walletIndex, type Evaluation, type Sample } from './rotation'
+import { DEFAULT_RULES, ENGINES, RULES, TIME_FRAMES, applyRules, evaluate, frameOf, resetRules, walletIndex, type Evaluation, type Sample } from './rotation'
+import { createSmart, type PriceSeries } from './smart'
+import { createCallLog } from './calls'
 import { FEED_SOURCES } from '../src/core/feedSources'
 import type { DetailSource, DetailsAnswer } from '../src/core/tokenDetails'
 import { SAFETY_SOURCES, type CheckResult, type SafetySource, type SourceResult } from '../src/core/safetyChecks'
@@ -408,7 +410,7 @@ const HONEYPOT_CHAINS = [1, 56, 8453]
 async function enrichJupiter(tokens: Token[]): Promise<MarketRow[]> {
   const out: MarketRow[] = []
   for (const group of chunks(tokens.filter((t) => t.chain === 'solana'), 100)) {
-    type J = { id: string; holderCount?: number; organicScore?: number; audit?: { topHoldersPercentage?: number }; stats1h?: { holderChange?: number }; stats24h?: { buyOrganicVolume?: number; sellOrganicVolume?: number } }
+    type J = { id: string; decimals?: number; holderCount?: number; organicScore?: number; audit?: { topHoldersPercentage?: number; freezeAuthorityDisabled?: boolean; mintAuthorityDisabled?: boolean }; stats1h?: { holderChange?: number }; stats24h?: { buyOrganicVolume?: number; sellOrganicVolume?: number } }
     const list = await getJson<J[]>(`https://lite-api.jup.ag/tokens/v2/search?query=${group.map((t) => t.address).join(',')}`)
     const byMint = new Map((Array.isArray(list) ? list : []).map((j) => [j.id, j]))
     for (const t of group) {
@@ -416,7 +418,19 @@ async function enrichJupiter(tokens: Token[]): Promise<MarketRow[]> {
       if (!j) continue
       const org = j.stats24h?.buyOrganicVolume != null ? (j.stats24h.buyOrganicVolume ?? 0) + (j.stats24h.sellOrganicVolume ?? 0) : null
       out.push(
-        enrichRow(t, { holders: numOrNull(j.holderCount), top10: numOrNull(j.audit?.topHoldersPercentage), holdersDelta1h: numOrNull(j.stats1h?.holderChange), organicScore: j.organicScore != null ? Math.round(j.organicScore) : null, organicVol24h: org }, 'Jupiter'),
+        enrichRow(
+          t,
+          {
+            holders: numOrNull(j.holderCount),
+            top10: numOrNull(j.audit?.topHoldersPercentage),
+            holdersDelta1h: numOrNull(j.stats1h?.holderChange),
+            organicScore: j.organicScore != null ? Math.round(j.organicScore) : null,
+            organicVol24h: org,
+            freezable: j.audit?.freezeAuthorityDisabled == null ? null : j.audit.freezeAuthorityDisabled ? 0 : 1,
+            decimals: numOrNull(j.decimals),
+          },
+          'Jupiter',
+        ),
       )
     }
     await pause(1000)
@@ -500,9 +514,15 @@ async function enrichHoneypot(tokens: Token[], ctx: FetchContext<MarketRow>, n: 
 async function enrichTracked(tokens: Token[]): Promise<MarketRow[]> {
   const out: MarketRow[] = []
   for (const t of tokens) {
-    // In the background there's no one waiting: give GeckoTerminal's queue up to 90 s.
-    const d = await details(t.id, t.pool ?? '', 90_000)
+    // Every source but GeckoTerminal (quotes, Jupiter, GoPlus…); the trade analysis reads the trade tape, which
+    // samples tracked pools first — so GeckoTerminal's 10 calls a minute aren't spent twice.
+    const d = await details(t.id, t.pool ?? '', 60_000, true)
+    const held = t.pool ? tape?.pool(t.chain, t.pool) : null
+    const fromTape = held ? analyseTrades(held.trades.map((x) => ({ at: x.at, buy: x.kind === 'buy', usd: x.usd, wallet: x.wallet }))) : null
     const first = (key: string, srcs?: DetailSource[]) => {
+      if (fromTape && key === 'netBuy5m') return fromTape.netBuy5m
+      if (fromTape && key === 'organicScore' && srcs?.includes('trades')) return fromTape.organic
+      if (fromTape && key === 'washProb') return fromTape.organic == null ? null : 100 - fromTape.organic
       const v = d.values[key] ?? {}
       for (const s of srcs ?? (Object.keys(v) as DetailSource[])) if (typeof v[s] === 'number') return v[s] as number
       return null
@@ -529,7 +549,12 @@ async function enrichTracked(tokens: Token[]): Promise<MarketRow[]> {
 
 let tape: ReturnType<typeof createTape> | null = null
 /** Pools the tape keeps sampled per chain (the most traded in the lists), plus every tracked token's. */
-const TAPE_PER_CHAIN = 15
+const TAPE_PER_CHAIN = 10
+/**
+ * The chains the tape covers (plus any chain a tracked token is on). Every chain listed costs GeckoTerminal
+ * calls, and its 10 a minute are shared: covering a few chains well beats covering every chain thinly.
+ */
+const TAPE_CHAINS = (process.env.TAPE_CHAINS || 'solana,base,bsc,ethereum').split(',').map((c) => c.trim()).filter(Boolean)
 
 /** GeckoTerminal's network id for a chain (our ids where they differ, else the same id). */
 const geckoNet = (chain: string) => chainById(chain)?.gecko ?? chain
@@ -544,21 +569,36 @@ async function sampleTape(ctx: FetchContext<MarketRow>, n: number): Promise<Mark
   const DEX = (t: Token) => t.chain !== 'coingecko' && Boolean(t.pool)
   const tracked = (ctx.tracked() as Token[]).filter(DEX)
   const byChain = new Map<string, MarketRow[]>()
-  for (const r of ctx.rows() as MarketRow[]) if (DEX(r.token) && (r.metrics.volume24h ?? 0) > 0) (byChain.get(r.token.chain) ?? byChain.set(r.token.chain, []).get(r.token.chain)!).push(r)
-  const busiest = [...byChain.values()].flatMap((rows) => rows.sort((a, b) => (b.metrics.volume24h ?? 0) - (a.metrics.volume24h ?? 0)).slice(0, TAPE_PER_CHAIN).map((r) => r.token))
-  const candidates = new Map<string, Token>()
-  for (const t of [...tracked, ...busiest]) if (!candidates.has(`${t.chain}:${t.pool}`)) candidates.set(`${t.chain}:${t.pool}`, t)
-  const due = [...candidates.values()].sort((a, b) => tape!.sampledAt(a.chain, a.pool!) - tape!.sampledAt(b.chain, b.pool!)).slice(0, n)
+  for (const r of ctx.rows() as MarketRow[])
+    if (DEX(r.token) && TAPE_CHAINS.includes(r.token.chain) && (r.metrics.volume24h ?? 0) > 0) (byChain.get(r.token.chain) ?? byChain.set(r.token.chain, []).get(r.token.chain)!).push(r)
+  // Each chain's candidates: its tracked pools first, then its busiest — a stable set, re-sampled in turn.
+  const perChain = new Map<string, Token[]>()
+  const add = (t: Token) => {
+    const list = perChain.get(t.chain) ?? perChain.set(t.chain, []).get(t.chain)!
+    if (!list.some((x) => x.pool === t.pool)) list.push(t)
+  }
+  tracked.forEach(add)
+  for (const rows of byChain.values()) rows.sort((a, b) => (b.metrics.volume24h ?? 0) - (a.metrics.volume24h ?? 0)).slice(0, TAPE_PER_CHAIN).forEach((r) => add(r.token))
+  for (const list of perChain.values()) list.sort((a, b) => tape!.sampledAt(a.chain, a.pool!) - tape!.sampledAt(b.chain, b.pool!))
+  // Chains take turns (the one waiting longest first), so none is starved by another's churn.
+  const chainsByWait = [...perChain.keys()].sort((a, b) => tape!.sampledAt(a, perChain.get(a)![0].pool!) - tape!.sampledAt(b, perChain.get(b)![0].pool!))
+  const due: Token[] = []
+  for (let i = 0; due.length < n && chainsByWait.some((c) => perChain.get(c)!.length > i); i++)
+    for (const c of chainsByWait) {
+      const t = perChain.get(c)![i]
+      if (t && due.length < n) due.push(t)
+    }
   const out: MarketRow[] = []
   for (const t of due) {
     const chain = t.chain
     try {
       const body = await gtQueue(() =>
-        getJson<{ data: { attributes: { block_timestamp: string; kind: string; volume_in_usd: string; tx_from_address: string; tx_hash: string } }[] }>(
+        getJson<{ data: { attributes: { block_timestamp: string; kind: string; volume_in_usd: string; tx_from_address: string; tx_hash: string; price_to_in_usd?: string; price_from_in_usd?: string } }[] }>(
           `${GT}/networks/${geckoNet(chain)}/pools/${t.pool}/trades`,
         ),
       )
       const trades = (body.data ?? []).map(({ attributes: a }) => ({
+        price: Number(a.kind === 'buy' ? a.price_to_in_usd : a.price_from_in_usd) || null,
         at: Date.parse(a.block_timestamp),
         pool: t.pool!,
         token: t.id,
@@ -568,7 +608,8 @@ async function sampleTape(ctx: FetchContext<MarketRow>, n: number): Promise<Mark
         wallet: String(a.tx_from_address || '').toLowerCase(),
         tx: a.tx_hash,
       }))
-      tape.add(chain, { pool: t.pool!, token: t.id, symbol: t.symbol }, trades.filter((x) => x.wallet && Number.isFinite(x.at)))
+      const added = tape.add(chain, { pool: t.pool!, token: t.id, symbol: t.symbol }, trades.filter((x) => x.wallet && Number.isFinite(x.at)))
+      smart?.record(chain, added) // every new buy waits to be judged, for the smart-wallet list
       const held = tape.pool(chain, t.pool!)!
       const recent = held.trades.filter((x) => Date.now() - x.at <= 2 * 3600e3)
       out.push(enrichRow(t, { tapeTrades2h: recent.length, tapeWallets2h: new Set(recent.map((x) => x.wallet)).size }, 'Trade tape'))
@@ -612,7 +653,62 @@ async function runRotation(ctx: FetchContext<MarketRow>): Promise<MarketRow[]> {
   const out: MarketRow[] = []
   // Rotation is measured within one chain, never across: each chain's tape on its own.
   for (const chain of tape.chains()) out.push(...(await rotateChain(ctx, chain)))
+  await callLog?.save()
   return out
+}
+
+// ---------- smart wallets, the calls log, the sell check ----------
+
+let smart: ReturnType<typeof createSmart> | null = null
+let callLog: ReturnType<typeof createCallLog> | null = null
+
+/** A token's stored prices from `from` to `to` (stray prices from junk pools left out). */
+const priceSeries: PriceSeries = async (token, from, to) =>
+  (await historySamples(token, from)).filter((s) => s.t <= to && typeof s.price === 'number').map((s) => [s.t, s.price!] as [number, number])
+
+/** Jupiter: can a $100 sell of this token be routed to USDC? (Solana's "sellable", each token every 30 min.) */
+async function sellCheck(ctx: FetchContext<MarketRow>, n: number): Promise<MarketRow[]> {
+  if (!tape || !collector) return []
+  const tokens = new Map<string, Token>()
+  for (const t of ctx.tracked() as Token[]) if (t.chain === 'solana') tokens.set(t.id, t)
+  for (const tr of tape.trades('solana', Date.now() - 2 * 3600e3)) if (!tokens.has(tr.token)) tokens.set(tr.token, { kind: 'token', id: tr.token, chain: 'solana', address: tr.token.slice(7), symbol: tr.symbol, name: tr.symbol })
+  const rowsById = new Map((ctx.rows() as MarketRow[]).map((r) => [r.token.id, r]))
+  const out: MarketRow[] = []
+  for (const t of due('sellCheck', [...tokens.values()], ctx, 30 * 60_000, n)) {
+    const x = collector.extras(t.id)
+    const price = rowsById.get(t.id)?.metrics.price ?? null
+    const decimals = x.decimals
+    if (!price || decimals == null) continue
+    const amount = Math.max(1, Math.round((100 / price) * 10 ** decimals))
+    try {
+      // Jupiter answers "no route" with an error status and a JSON reason: read it as it is.
+      const res = await fetch(`https://lite-api.jup.ag/swap/v1/quote?inputMint=${t.address}&outputMint=${SOL_USDC}&amount=${amount}&slippageBps=300`, { signal: AbortSignal.timeout(15_000) })
+      if (res.status === 429) break
+      const q = (await res.json().catch(() => ({}))) as { outAmount?: string; error?: string; errorCode?: string }
+      const routed = Boolean(q.outAmount && Number(q.outAmount) > 0)
+      // "No route" is evidence; any other failure isn't (try again next run).
+      if (!routed && !/route|liquidity|could not find/i.test(`${q.error ?? ''} ${q.errorCode ?? ''}`)) continue
+      out.push(enrichRow(t, { sellRoute: routed ? 1 : 0 }, 'Jupiter'))
+    } catch {
+      /* next run */
+    }
+    await pause(1000)
+  }
+  return out
+}
+
+async function fetchSource(key: string, pages: number, ctx: FetchContext<MarketRow>): Promise<MarketRow[]> {
+  if (key === 'sellCheck') return sellCheck(ctx, pages)
+  if (key === 'smartLearn') {
+    await smart?.resolve(priceSeries)
+    await smart?.save()
+    return []
+  }
+  if (key === 'grading') {
+    await callLog?.grade(priceSeries)
+    return []
+  }
+  return fetchSourceRest(key, pages, ctx)
 }
 
 async function rotateChain(ctx: FetchContext<MarketRow>, chain: string): Promise<MarketRow[]> {
@@ -623,6 +719,7 @@ async function rotateChain(ctx: FetchContext<MarketRow>, chain: string): Promise
   const byPool = new Map<string, TapeTrade[]>()
   for (const t of all) (byPool.get(t.pool) ?? byPool.set(t.pool, []).get(t.pool)!).push(t)
   const rowsById = new Map((ctx.rows() as MarketRow[]).map((r) => [r.token.id, r]))
+  const smartSet = smart?.setFor(chain) ?? null
   const out: MarketRow[] = []
   for (const [pool, own] of byPool) {
     const first = own[0]
@@ -631,14 +728,27 @@ async function rotateChain(ctx: FetchContext<MarketRow>, chain: string): Promise
     const token: Token = row?.token ?? { kind: 'token', id: first.token, chain, address: first.token.slice(chain.length + 1), symbol: first.symbol, name: first.symbol, pool }
     const ev = evaluate(own, index, pool, await historySamples(first.token, now - 6 * 3600e3), {
       token: first.token,
+      price: row?.metrics.price ?? x.price ?? null,
       liquidity: row?.metrics.liquidity ?? null,
+      poolAgeHours: row?.metrics.ageHours ?? null,
+      holders: x.holders ?? null,
       organicScore: x.organicScore ?? null,
       honeypot: x.honeypot ?? null,
+      freezable: x.freezable ?? null,
+      sellRoute: x.sellRoute ?? null,
       buyTax: x.buyTax ?? null,
       sellTax: x.sellTax ?? null,
       impact10k: x.impact10k ?? null,
+      smart: smartSet,
     }, now)
     rotationDetail.set(first.token, { ...ev, token })
+    // Every engine's call, written down when it changes (graded later: see server/calls.ts).
+    const price = row?.metrics.price ?? null
+    callLog?.log(
+      Object.entries(ev.calls)
+        .filter(([, c]) => c.call)
+        .map(([engine, c]) => ({ at: now, chain, token: first.token, symbol: token.symbol, engine, call: c.call!, score: ev.scores[engine as keyof typeof ev.scores].score, price, why: c.why, plan: c.call === 'BUY' ? { targetPct: frameOf(RULES.plan.holdHours).targetPct, stopPct: frameOf(RULES.plan.holdHours).stopPct, holdHours: RULES.plan.holdHours } : null })),
+    )
     const call = ev.calls[ev.engine]
     out.push({
       ...enrichRow(token, {
@@ -655,6 +765,14 @@ async function rotateChain(ctx: FetchContext<MarketRow>, chain: string): Promise
         flowScore: ev.scores.flow.score,
         executionCost: ev.costPct,
         aboveLow6h: ev.measures.aboveLow6h,
+        cycleScore: ev.scores.cycle.score,
+        smartScore: ev.scores.smart.score,
+        smartBuyers1h: ev.smart.buyers,
+        smartSellers1h: ev.smart.sellers,
+        blendScore: ev.scores.blend.score,
+        consensusScore: ev.scores.consensus.score,
+        rotationMidLiqScore: ev.scores.rotationMidLiq.score,
+        smartRotationScore: ev.scores.smartRotation.score,
       }, 'Rotation'),
       tags: { ...(ev.phase.phase ? { phase: ev.phase.phase } : {}), ...(call.call ? { call: call.call, callWhy: call.why } : {}) },
     })
@@ -662,7 +780,7 @@ async function rotateChain(ctx: FetchContext<MarketRow>, chain: string): Promise
   return out
 }
 
-async function fetchSource(key: string, pages: number, ctx: FetchContext<MarketRow>): Promise<MarketRow[]> {
+async function fetchSourceRest(key: string, pages: number, ctx: FetchContext<MarketRow>): Promise<MarketRow[]> {
   if (key === 'tradeTape') return sampleTape(ctx, pages)
   if (key === 'rotation') return runRotation(ctx)
   if (key === 'enrichJupiter') return enrichJupiter(ctx.tokens() as Token[])
@@ -997,7 +1115,7 @@ function analyseTrades(trades: Trade[]) {
   return { netBuy5m, organic: Math.round(organic) }
 }
 
-async function details(id: string, poolHint: string, waitMs = 10_000): Promise<DetailsAnswer> {
+async function details(id: string, poolHint: string, waitMs = 10_000, skipGecko = false): Promise<DetailsAnswer> {
   const { chain, address } = splitId(id)
   const c = chainById(chain)
   const values: DetailsAnswer['values'] = {}
@@ -1046,7 +1164,8 @@ async function details(id: string, poolHint: string, waitMs = 10_000): Promise<D
       put('poolAge', 'dexscreener', hours(p.pairCreatedAt ?? null))
     })
 
-  const net = c?.gecko
+  // The background tracking skips GeckoTerminal: its trades come from the trade tape instead (no double fetch).
+  const net = skipGecko ? undefined : c?.gecko
   const jobs: Promise<void>[] = []
   if (net) {
     const poolP = pool ? Promise.resolve(pool) : gtTopPool(net, address)
@@ -1186,6 +1305,64 @@ async function details(id: string, poolHint: string, waitMs = 10_000): Promise<D
   return { id, at: Date.now(), values, errors }
 }
 
+// ---------- the rotation engine's rules (saved), market rotation, Telegram ----------
+
+const rulesFile = () => path.resolve(feedDir, 'rotation.json')
+async function loadRules() {
+  try {
+    applyRules(JSON.parse(await fs.readFile(rulesFile(), 'utf8')))
+  } catch {
+    /* defaults */
+  }
+}
+async function saveRules() {
+  await fs.mkdir(feedDir, { recursive: true })
+  await fs.writeFile(rulesFile(), JSON.stringify(RULES, null, 2))
+}
+
+/** Per chain: the pools gaining and losing capital, and the strongest flows between them (from the last evaluations). */
+function marketRotation(chainFilter: string) {
+  const byChain = new Map<string, (Evaluation & { token: Token })[]>()
+  for (const e of rotationDetail.values()) if (!chainFilter || e.token.chain === chainFilter) (byChain.get(e.token.chain) ?? byChain.set(e.token.chain, []).get(e.token.chain)!).push(e)
+  return {
+    chains: [...byChain.entries()]
+      .map(([chain, list]) => {
+        const flows = new Map<string, { from: string; to: string; usd: number }>()
+        for (const e of list)
+          for (const peer of e.peers) {
+            if (peer.inUsd > 0) flows.set(`${peer.symbol}>${e.token.symbol}`, { from: peer.symbol, to: e.token.symbol, usd: Math.max(flows.get(`${peer.symbol}>${e.token.symbol}`)?.usd ?? 0, peer.inUsd) })
+            if (peer.outUsd > 0) flows.set(`${e.token.symbol}>${peer.symbol}`, { from: e.token.symbol, to: peer.symbol, usd: Math.max(flows.get(`${e.token.symbol}>${peer.symbol}`)?.usd ?? 0, peer.outUsd) })
+          }
+        const movers = list.filter((e) => e.market && e.market.net !== 0).map((e) => ({ token: e.token, net: e.market!.net, inUsd: e.market!.inUsd, outUsd: e.market!.outUsd }))
+        return {
+          chain,
+          pools: list.length,
+          rotatedUsd: list.reduce((s, e) => s + (e.market ? e.market.inUsd : 0), 0),
+          gainers: movers.filter((m) => m.net > 0).sort((a, b) => b.net - a.net).slice(0, 8),
+          losers: movers.filter((m) => m.net < 0).sort((a, b) => a.net - b.net).slice(0, 8),
+          flows: [...flows.values()].sort((a, b) => b.usd - a.usd).slice(0, 12),
+        }
+      })
+      .sort((a, b) => b.rotatedUsd - a.rotatedUsd),
+  }
+}
+
+const telegramReady = () => Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID)
+async function telegram(text: string) {
+  if (!telegramReady()) return { sent: false, error: 'Telegram isn’t set up: add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to .env' }
+  try {
+    const r = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text, parse_mode: 'Markdown', disable_web_page_preview: true }),
+    })
+    const body = (await r.json().catch(() => ({}))) as { ok?: boolean; description?: string }
+    return body.ok ? { sent: true } : { sent: false, error: body.description ?? `Telegram answered ${r.status}` }
+  } catch (e) {
+    return { sent: false, error: (e as Error).message }
+  }
+}
+
 // ---------- the plugin ----------
 
 const send = (res: ServerResponse, status: number, data: unknown) => {
@@ -1211,6 +1388,11 @@ export function dataEngine(dir = 'data/history'): Plugin {
       // The Feed's storage: every source on its own timer, from now until the server stops.
       tape = createTape(path.resolve(feedDir, '..', 'trades'))
       void tape.load()
+      smart = createSmart(path.resolve(feedDir, '..', 'smart'))
+      void smart.load()
+      callLog = createCallLog(path.resolve(feedDir, '..', 'calls'))
+      void callLog.load()
+      void loadRules()
       const c = createCollector<MarketRow>({
         dir: feedDir,
         historyDir,
@@ -1267,11 +1449,50 @@ export function dataEngine(dir = 'data/history'): Plugin {
             return send(res, 200, { points: await history(p.get('id') ?? '', p.get('metric') ?? 'price', since) })
           }
           if (kind === 'details') return send(res, 200, await details(p.get('id') ?? '', p.get('pool') ?? ''))
+          // The rotation engine's rules: GET them, POST a change (saved), POST {reset: true} for the defaults.
+          if (kind === 'rotation/config') {
+            if (req.method === 'POST') {
+              let body = ''
+              for await (const chunk of req) body += chunk
+              const patch = JSON.parse(body || '{}')
+              if (patch.reset) resetRules()
+              else applyRules(patch)
+              await saveRules()
+            }
+            return send(res, 200, { rules: RULES, defaults: DEFAULT_RULES, engines: ENGINES, frames: TIME_FRAMES })
+          }
+          // Market rotation, per chain: where capital is going between the sampled pools.
+          if (kind === 'rotation/market') return send(res, 200, marketRotation(p.get('chain') ?? ''))
+          // The evaluation: per engine, how its calls did; and the latest calls (one token's with ?id=).
+          if (kind === 'evaluation') {
+            const id = p.get('id') ?? undefined
+            const recent = callLog?.recent(Number(p.get('n')) || 100, id) ?? []
+            return send(res, 200, { token: id ?? null, summary: callLog?.summary(id) ?? {}, recent, logged: id ? recent.length : (callLog?.count() ?? 0) })
+          }
+          // Smart wallets: what's been learned, and a chain's list.
+          if (kind === 'smart') return send(res, 200, { ...(smart?.stats() ?? {}), wallets: smart?.list(p.get('chain') ?? 'solana').slice(0, 200) ?? [] })
+          // Telegram: POST { title, text } (needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID); GET says if it's set up.
+          if (kind === 'notify') {
+            if (req.method !== 'POST') return send(res, 200, { telegram: telegramReady() })
+            let body = ''
+            for await (const chunk of req) body += chunk
+            const { title, text } = JSON.parse(body || '{}') as { title?: string; text?: string }
+            return send(res, 200, await telegram(`${title ? `*${title}*\n` : ''}${text ?? ''}`))
+          }
           // The rotation engine: one token's full evaluation, or every evaluated token, best first.
           if (kind === 'rotation') {
             if (p.get('id')) return send(res, 200, rotationDetail.get(p.get('id')!) ?? null)
             const list = [...rotationDetail.values()].sort((a, b) => (b.scores.quality.score ?? -1) - (a.scores.quality.score ?? -1))
-            return send(res, 200, { engine: DEFAULT_ENGINE, engines: ENGINES, rules: RULES, tokens: list.map((e) => ({ token: e.token, phase: e.phase.phase, call: e.calls[e.engine], scores: Object.fromEntries(Object.entries(e.scores).map(([k, v]) => [k, v.score])), rotation: e.rotation, market: e.market })) })
+            const chainFilter = p.get('chain')
+            return send(res, 200, {
+              engine: RULES.engine,
+              engines: ENGINES,
+              coverage: tape?.stats() ?? {},
+              smart: smart?.stats() ?? null,
+              tokens: list
+                .filter((e) => !chainFilter || e.token.chain === chainFilter)
+                .map((e) => ({ token: e.token, phase: e.phase.phase, call: e.calls[RULES.engine] ?? e.calls[e.engine], calls: Object.fromEntries(Object.entries(e.calls).map(([k, c]) => [k, c.call])), scores: Object.fromEntries(Object.entries(e.scores).map(([k, v]) => [k, v.score])), rotation: e.rotation, market: e.market, costPct: e.costPct, plan: e.plan, at: e.at })),
+            })
           }
           // The trade tape: what's held per chain, or one pool's trades.
           if (kind === 'trades')

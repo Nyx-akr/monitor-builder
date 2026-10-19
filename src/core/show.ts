@@ -46,6 +46,8 @@ export function describe(v: Value): string[] {
       return [`“${v.value.slice(0, 60)}”`]
     case 'bool':
       return [`${v.label ? `${v.label}: ` : ''}${v.value ? 'yes' : 'no'}`]
+    case 'marks':
+      return [`${v.label} · ${v.marks.length} mark${v.marks.length === 1 ? '' : 's'}`, ...v.marks.slice(-2).map((m) => `${m.label} at ${new Date(m.t).toLocaleTimeString()}`)]
     case 'clock':
       return [v.running ? `every ${v.everyMs >= 60_000 ? `${v.everyMs / 60_000} min` : `${v.everyMs / 1000} s`}` : 'paused']
   }

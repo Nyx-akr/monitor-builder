@@ -682,7 +682,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* ---------- the full-screen dashboard (the UI) ---------- */
 .dash { position: fixed; inset: 0; z-index: 70; display: flex; flex-direction: column; background: var(--bg); animation: dash-in 0.35s ease both; }
 @keyframes dash-in { from { opacity: 0; } to { opacity: 1; } }
-.dash-nav { flex: none; height: 52px; display: flex; align-items: center; gap: 16px; padding: 0 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.dash-nav { flex: none; height: 44px; display: flex; align-items: center; gap: 14px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .dash-brand { font-weight: 700; font-size: 15px; letter-spacing: 0.01em; white-space: nowrap; display: flex; align-items: center; gap: 8px; }
 .dash-brand .logo { color: var(--accent); }
 .dash-selected { flex: 1; min-width: 0; display: flex; justify-content: center; font-size: 13px; }
@@ -690,9 +690,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .dash-clock { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
 .dash-exit { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--text); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .dash-exit:hover { border-color: var(--accent); }
-.dash-grid { flex: 1; min-height: 0; display: flex; padding: 14px; }
+.dash-grid { flex: 1; min-height: 0; display: flex; padding: 10px; }
 .dash-grid > * { flex: 1; }
-.dash-split { display: flex; gap: 14px; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.dash-split { display: flex; gap: 10px; width: 100%; height: 100%; min-width: 0; min-height: 0; }
 .dash-split.col { flex-direction: column; }
 .dash-split > div { display: flex; min-width: 0; min-height: 0; }
 .dash-split > div > * { flex: 1; }
@@ -724,3 +724,4 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .layout-btn { position: absolute; z-index: 5; transform: translateX(-100%); padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); }
 .layout-btn:hover { border-color: #60a5fa; }
 .layout-btn.on { background: #1d3461; border-color: #60a5fa; color: #dbeafe; }
+.dash-tf { padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--raised); color: var(--text); font: inherit; font-size: 12px; }

@@ -95,7 +95,14 @@ export interface ClockValue {
   label?: string
 }
 
-export type Value = Token | NumberValue | TableValue | SeriesValue | CandlesValue | ReportValue | TextValue | BoolValue | ClockValue
+/** Moments to mark on a chart: a call (BUY / SELL…) at a time, with its reason. */
+export interface MarksValue {
+  kind: 'marks'
+  label: string
+  marks: { t: number; label: string; tone: 'buy' | 'sell' | 'avoid' | 'watch'; why?: string }[]
+}
+
+export type Value = Token | NumberValue | TableValue | SeriesValue | CandlesValue | ReportValue | TextValue | BoolValue | ClockValue | MarksValue
 
 export type ValueKind = Value['kind']
 

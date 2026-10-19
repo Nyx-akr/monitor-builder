@@ -6,7 +6,8 @@
       "id": "page",
       "type": "page",
       "props": {
-        "layout": "{\"id\":\"s-side\",\"dir\":\"row\",\"ratio\":0.23758099352051837,\"a\":{\"id\":\"selector\",\"leaf\":true},\"b\":{\"id\":\"s-rows\",\"dir\":\"col\",\"ratio\":0.3416953560163565,\"a\":{\"id\":\"tile2\",\"leaf\":true},\"b\":{\"id\":\"s-bottom\",\"dir\":\"col\",\"ratio\":0.74589023033494,\"a\":{\"id\":\"s-panels\",\"dir\":\"row\",\"ratio\":0.3261752793175104,\"a\":{\"id\":\"panel1\",\"leaf\":true},\"b\":{\"id\":\"panel2\",\"leaf\":true}},\"b\":{\"id\":\"wide\",\"leaf\":true}}}}"
+        "layout": "{\"id\":\"s-side\",\"dir\":\"row\",\"ratio\":0.23758099352051837,\"a\":{\"id\":\"selector\",\"leaf\":true},\"b\":{\"id\":\"s-rows\",\"dir\":\"col\",\"ratio\":0.3416953560163565,\"a\":{\"id\":\"tile2\",\"leaf\":true},\"b\":{\"id\":\"s-bottom\",\"dir\":\"col\",\"ratio\":0.4273210964506734,\"a\":{\"id\":\"s-panels\",\"dir\":\"row\",\"ratio\":0.3261752793175104,\"a\":{\"id\":\"panel1\",\"leaf\":true},\"b\":{\"id\":\"panel2\",\"leaf\":true}},\"b\":{\"id\":\"bfilr2\",\"dir\":\"row\",\"ratio\":0.5,\"a\":{\"id\":\"wide\",\"leaf\":true},\"b\":{\"id\":\"b84n11\",\"leaf\":true}}}}}",
+        "timeframe": "4h"
       },
       "x": -32,
       "y": 320
@@ -20,7 +21,7 @@
         "chain": "",
         "chains": "solana",
         "limit": 300,
-        "selected": "{\"kind\":\"token\",\"id\":\"solana:6yMZv1NgnQWBeocyfCNKmdqGr3Enu3Lrdpz3TJRvpump\",\"chain\":\"solana\",\"address\":\"6yMZv1NgnQWBeocyfCNKmdqGr3Enu3Lrdpz3TJRvpump\",\"symbol\":\"CATONICE\",\"name\":\"catonthinice\",\"logo\":\"https://cdn.dexscreener.com/cms/images/yqcDtdex2bDQBboz?width=800&height=800&quality=95&format=auto\",\"pool\":\"2aegSTad7cZTrd536XtXkjkY88hvthvwsDA5TuCtQD6v\"}",
+        "selected": "{\"kind\":\"token\",\"id\":\"solana:3NxfWMHmfQg8NJFW5AG1ti2xACdczWz24e9SKyk1pump\",\"chain\":\"solana\",\"address\":\"3NxfWMHmfQg8NJFW5AG1ti2xACdczWz24e9SKyk1pump\",\"symbol\":\"MINTER\",\"name\":\"Minter\",\"logo\":\"https://coin-images.coingecko.com/coins/images/102179584/large/logo.png?1792284591\",\"pool\":\"3p3yajJRqwrvgNs3M1UDVDXVUriZjZ8vE8bdpnpvkNRJ\"}",
         "watch": "[{\"kind\":\"token\",\"id\":\"solana:3NxfWMHmfQg8NJFW5AG1ti2xACdczWz24e9SKyk1pump\",\"chain\":\"solana\",\"address\":\"3NxfWMHmfQg8NJFW5AG1ti2xACdczWz24e9SKyk1pump\",\"symbol\":\"MINTER\",\"name\":\"Minter\",\"logo\":\"https://coin-images.coingecko.com/coins/images/102179584/large/logo.png?1792284591\",\"pool\":\"3p3yajJRqwrvgNs3M1UDVDXVUriZjZ8vE8bdpnpvkNRJ\"},{\"kind\":\"token\",\"id\":\"solana:55A3VxMBfzw6uSe64zms5iMPw9k6kx9WzzusbCU6pump\",\"chain\":\"solana\",\"address\":\"55A3VxMBfzw6uSe64zms5iMPw9k6kx9WzzusbCU6pump\",\"symbol\":\"Gato\",\"name\":\"El Gato\",\"logo\":\"https://coin-images.coingecko.com/coins/images/102179581/large/tqz4rf2a60hy42cu4k4yiphyhlte.?1792283166\",\"pool\":\"H4wp14QGkt3YextGrQXDqF1c3EPZVMxufgGcUhxSRJN4\"}]",
         "watchOnly": false,
         "metric": "price",
@@ -49,6 +50,11 @@
         "pages_enrichHoneypot": 5,
         "every_tradeTape": 60,
         "pages_tradeTape": 3,
+        "every_sellCheck": 60,
+        "pages_sellCheck": 5,
+        "every_smartLearn": 600,
+        "every_grading": 600,
+        "every_rotation": 60,
         "every_tracked": 120,
         "source": "trending",
         "refreshSec": 30,
@@ -71,7 +77,7 @@
       "props": {
         "lines": 1,
         "style": "candle",
-        "timeframe": "15m",
+        "timeframe": "4h",
         "scale": "value",
         "candle": "auto"
       },
@@ -104,6 +110,33 @@
       "y": 416,
       "dock": {
         "slot": "panel2"
+      }
+    },
+    {
+      "id": "umuj20sl",
+      "type": "evaluation",
+      "props": {
+        "follow": false,
+        "token": ""
+      },
+      "x": 1256,
+      "y": 1176,
+      "dock": {
+        "slot": "b84n11"
+      }
+    },
+    {
+      "id": "c1bkornn",
+      "type": "marketRotation",
+      "props": {
+        "chain": "",
+        "follow": false,
+        "token": ""
+      },
+      "x": 408,
+      "y": 1088,
+      "dock": {
+        "slot": "wide"
       }
     }
   ],
@@ -140,8 +173,30 @@
         "port": "token"
       },
       "id": "ih1jsxw8"
+    },
+    {
+      "id": "qx2j627n",
+      "from": {
+        "block": "2o8o6f9l",
+        "port": "selected"
+      },
+      "to": {
+        "block": "umuj20sl",
+        "port": "token"
+      }
+    },
+    {
+      "id": "xax9gxcx",
+      "from": {
+        "block": "2o8o6f9l",
+        "port": "selected"
+      },
+      "to": {
+        "block": "c1bkornn",
+        "port": "token"
+      }
     }
   ],
-  "rev": 348,
-  "updatedAt": "2026-10-18T23:28:59.513Z"
+  "rev": 382,
+  "updatedAt": "2026-10-19T16:06:41.974Z"
 }

@@ -56,12 +56,16 @@ The standard metrics are `price`, `change5m/1h/6h/24h`, `volume1h/24h`, `liquidi
   - **Math** does a + − × ÷ b, % of, or % change. It works on numbers, or on series aligned by time.
   - **Formula** is your own expression. Over a list it adds a new column, e.g. `volume24h / liquidity`.
   - **Change** is the % change over a window. **Moving average** smooths a series.
+- **Engine** (the rotation engine's tools; its logic runs on the server, see *The rotation engine* below)
+  - **Rotation board**: every evaluated token, ranked by the chosen engine, with phase and call badges, the score, wallets rotating in / out, 2 h flow and round-trip cost. It also shows the tape's coverage per chain. Click a row to select the token, and toggle *BUY only*. Its right panel edits the engine and its rules: BUY / HOLD lines, liquidity band, TIDE veto, safety, trade size, cost cap and hold time, with a reset to Vibe-MM's defaults. Outputs `tokens` (the ranked list) and `buys`.
+  - **Market rotation**: per chain, the pools gaining or losing capital (2 h) and the strongest flows between them. Outputs `movers`.
+  - **Evaluation**: how each engine's calls did: BUYs, SELLs, how many are graded, average return after 1 h / 6 h / 24 h, and the trade plan's win rate and average; plus the latest graded calls and what's been learned about smart wallets.
 - **Show**
   - **Token details**: always in the flow (one, movable, not deletable). Everything about the token selected in the Feed (or a token wired in): market, flow, execution, holders, token facts and a sell simulation. Each value is labelled with its source. In the right panel each field can be shown or hidden, and where several sources have it, the source chosen. The shown fields go out of `details` as a one-row table.
-  - **Chart**: line, area or candles, up to 4 inputs, % scale for comparing, and a timeframe menu.
+  - **Chart**: line, area or candles, up to 4 inputs, % scale for comparing, and a timeframe menu. Its `marks` input flags moments on it, e.g. Token details' BUY / SELL calls.
   - **Number tile**, **Table**, **Token card** and **Safety card**.
 - **Rules**
-  - **Alert**: fires when a value goes above or below a level, moves by X%, or a new token appears in a list. It can also show a browser notification.
+  - **Alert**: fires when a value goes above or below a level, moves by X%, a new token appears in a list, or a token's value in a list *becomes* something (e.g. the Rotation board's `call` becomes BUY). It can show a browser notification and send to Telegram (set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`).
   - **Alert log**: every alert that has fired.
 
 Drag a Show block (or the Feed, Token details, Safety or Alert log) onto a box of the **Page** to make it a widget. A new Page is one box: **▦ Edit layout** (above the Page) turns the boxes blue, so you can split any box left/right or top/bottom, drag the dividers to resize, or remove a box. The layout is saved with the flow, and the full-screen dashboard follows it. Older flows keep their original boxes, converted into the same split layout. **⤢ Full screen**, just above the Page, glides into the Page, then opens the **Market Monitor** dashboard. It's a responsive grid of the Page's widgets that fills any screen (ultrawide too, and stacks on narrow ones), under a fixed navbar with the selected token, a clock and *Exit full screen* (or Esc). Widgets scroll with the mouse wheel and react to clicks: clicking a token in the Feed selects it, and Token details follows. **Exit full screen** (or Esc) glides back to the flow. **Preview** hides the editor.
@@ -107,9 +111,9 @@ Every Feed source runs on its own timer for as long as the dev server runs. Its 
   | DefiLlama | 50 tokens a call | 5 min | a reference price (→ *Price vs DefiLlama*) |
   | GoPlus | 1 token a call, 10 per run | 1 min; each token every 6 h | holders, top-10 share, buy / sell tax |
   | honeypot.is | 1 token a call, 5 per run (Ethereum, BNB, Base) | 1 min; each token daily | honeypot (sell simulation) |
-  | Trade tape | 3 pools per run, any chain (1 GeckoTerminal call each) | 1 min | each pool's last 300 trades, wallet by wallet, kept 6 h in `data/trades/<chain>.json` (one file per chain, because rotation never crosses chains): the rotation engine's input. Candidates: your watchlist and selected token, then each chain's 15 most-traded pools, oldest sample first. |
+  | Trade tape | 3 pools per run, any chain (1 GeckoTerminal call each) | 1 min | each pool's last 300 trades, wallet by wallet, kept 6 h in `data/trades/<chain>.json` (one file per chain, because rotation never crosses chains): the rotation engine's input. Chains: Solana, Base, BNB and Ethereum by default (`TAPE_CHAINS` in `.env`), plus any chain your watchlist is on. Each chain's tracked pools come first, then its 10 most-traded; chains take turns, so none is starved. |
   | Rotation engine | every token in the trade tape, chain by chain | 1 min, no API calls | Vibe-MM's rotation engines (`server/rotation.ts`): wallets rotating in/out (1 h), net $, market net flow (2 h) and connected pools, phase (QUIET / WAKING / RUNNING / PEAKING / FADING from the stored 6 h history), ROTATION / MOMENTUM / ORDER FLOW / ROTATION+ / QUALITY / TIDE scores, safety gates, round-trip cost, and a call per engine (BUY / WATCH / SELL / AVOID, with the hold rule). The Feed shows QUALITY ROTATION's call and reason. |
-  | Full details | the Feed's watchlist and the token in Token details | 2 min | net buy 5m, organic score from the trade sample, wash probability, $10K impact |
+  | Full details | the Feed's watchlist and the token in Token details (its trade analysis reads the trade tape: no GeckoTerminal calls) | 2 min | net buy 5m, organic score from the trade sample, wash probability, $10K impact |
 
   GeckoTerminal, DexScreener and CoinGecko limits are documented. Jupiter, DefiLlama, GoPlus and honeypot.is publish none for free use, so the budget uses cautious assumed limits. The Feed shows each API's calls per minute and warns near a limit.
 - **Only real changes are written.** A token gets a new line only when a value changes; its age, which moves with the clock, doesn't count.
@@ -143,3 +147,19 @@ A block is one object: its `inlets` and `outlets`, an optional `query` (what to 
 - Telegram or webhook alerts, and server-side rules that run while the app is closed.
 - Market-maker widgets: depth, spread and a price-impact ladder.
 - Birdeye or Codex adapters for faster low-cap candles, and websocket push.
+
+## The rotation engine (`server/rotation.ts`, `smart.ts`, `calls.ts`)
+
+A port of Vibe-MM's engine, on our data. Every minute, for every token on the trade tape, chain by chain (rotation never crosses chains):
+
+- **Rotation:** a wallet that sold another token in the last 2 h and bought this one in the last hour rotated *in*; the reverse rotated *out*. We count wallets each way, net $, and the market flow between this pool and every other (2 h, min of both sides).
+- **Phase** from the stored 6 h history: QUIET / WAKING / RUNNING / PEAKING / FADING.
+- **Twelve engines**, each scoring 0–100:
+  - market readers: CYCLE (the 7-input EARLY model), MOMENTUM, SMART MONEY, ORDER FLOW, ROTATION;
+  - combinations: BLEND, ROTATION+, CONSENSUS, ROTATION MID-LIQ, SMART ROTATION, QUALITY ROTATION (the default) and TIDE.
+- **Calls.** A **call** per engine: PEAKING is SELL, FADING is AVOID. A BUY needs WAKING (or an early RUNNING), the score over the engine's line, the **safety gates** (sellable via honeypot.is on EVM or a Jupiter sell route plus freeze authority on Solana, tax, liquidity floor) and a **round-trip cost** under the cap at the trade size. A hold rule keeps a call through small dips.
+- **Smart wallets** are learned from our own tape: every $20+ buy is judged after 6 h (+10 % before −7 % wins). 3+ buys on 2+ tokens winning 40 %+ makes a wallet smart.
+- **Evaluation.** Every call change goes into `data/calls/calls.jsonl`, and is graded from the stored prices: the return after 1 h / 6 h / 24 h, and the trade plan's outcome (target, stop or time).
+- The rules live in `data/feed/rotation.json` (edited from the Rotation board).
+
+Every number is a floor over the pools the tape has sampled: coverage, GeckoTerminal's 10 calls a minute, is the main limit.
